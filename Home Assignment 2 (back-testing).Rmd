@@ -1,0 +1,1344 @@
+
+Соснов Денис ID23
+
+Backtesting
+
+Перед началом работы убедитесь, что вы предварительно открыли файл workspace с помощью R-studio, а не R (пкм->открыть с помощью->R-studio). Это позволит сэкономить вам много времени на проверке данной работы. После того, как вы открыли файл workspace и непосредственно сам файл с работой, можете приступать к её проверке. Для питонистов, которые не работали в R с Markdown: файл с работой содержит в себе как текст-мануал с пояснениями, так и блоки с кодом (серый фон), каждый из которых отвечает за выполнение определенных операций. Запуск каждого блока осуществляется нажатием маленькой зеленой стрелки вправо в верхнем-правом углу каждого блока. Результатом запуска каждого блока может быть таблица, вычисление, переменная, текст, графики и.т.д., все, что является результатом исполнения запущенного вами фрагмента кода появится в белом окне под ним (причем, если результатов несколько - например, 2 графика, вы можете переключаться между ними в том же белом окне). В ходе проверки вы встретитесь с фрагментами кода, которые можно не запускать (они будут указаны), поскольку результат их исполнения (а это в основном таблицы с сигналами после инициирования функции lar) уже был подгружен вами, когда вы открыли файл workspace. Эти фрагменты кода действительно лучше не запускать, поскольку выборки я не обрезал и их компиляция займет уйму времени.
+
+Убедительная просьба: обращать внимание на слово "WARNING" в комментариях и что за ним следует (как раз те фрагменты кода, исполнение которых можно опустить).
+
+Уставнока и применение пакетов. (просто запустить и не обращать внимания, если выйдут предупреждения о несоответствиях версий библиотеки или конфликтам с другими библиотеками)
+
+```{r}
+install.packages("dplyr")
+install.packages("ggplot2")
+install.packages("reshape2")
+library(dplyr)
+library(ggplot2)
+library(reshape2)
+```
+
+
+1. Подготовка данных
+
+Разделим имеющуюся выборку на 2 части: 2/3 - обучающая (sample) сохраним ее в массив для backtesting, 1/3 - для проверки результатов backtesting (out of sample).
+
+```{r}
+sample <- eurusd_h %>%
+  slice(2:(nrow(eurusd_h)*0.66666)) #Сразу возьмем те наблюдения, в которых известна доходность
+out_of_sample <- eurusd_h %>%
+  slice((nrow(eurusd_h)*0.66666+1):nrow(eurusd_h))
+```
+
+2. Backtesting маржинальных стратегий
+
+Протестируем стратегию роста lar_up. Для этого при инициировании универсальной функции (под обе стратегии) поставим значение барьерной вероятности для стратегии падения p_down равную 1. В таком случае мы будем получать сигналы только о росте цены в случае, если вероятность этого события согласно оцененному функцией значению больше заданному нами значению барьерной вероятности p_up, а сигналы о падении цены мы не будем получать вовсе, поскольку для соответствующего сигнала классификатор должен быть уверен на 100% в падении цены, чего не случается практически никогда. Таким образом, для p_up в диапазоне от 0.1 до 0.9 (0 - функция всегда будет уверена в достоверности своего прогноза на рост, 1 - практически никогда не будет уверена, поэтому крайние значения брать не будем и ограничимся шагом 0.1 в целях экономии времени на итерациях) инициируем функцию lar и занесем полученные значения сигналов (1 - long, 0 - nothing, -1 - short). Наша цель - подобрать такое оптимальное значение барьерной вероятности p_up, при которой наша стратегия покажет лучший результат. Качество стратегии в зависимости от барьерной вероятности мы проверим как статистически (ROC - кривая), так и финансово (по графику накопленной доходности). Инициируем цикл, который будет перебирать указанные выше значения p_up и поочередно подставлять их в функцию lar. В результате для каждой вероятности мы получим таблицу, содержащую: 1) Период, в котором получен сигнал (period) 2) Непосредственно сам сигнал (position) 3) Значения доходности предшествующих трех периодов, используемые для прогноза (lag1, lag2, lag3) 4) Реальное значение доходности прогнозируемого периода.
+
+Получим сигналы. WARNING: Запускать следующий блок не обязательно, поскольку результат данной компиляции уже есть в вашем workspace (в верхнем-правом углу ищи signals_larup). Можно конечно запустить (займет ~2.5 часа для всей выборки).
+
+```{r}
+signals_larup <- data.frame(p_up = c(), period = c(), position = c(), lag0 = c(), lag1 = c(), lag2 = c(), lag3 = c())
+for (p_up in seq(0.1,0.9,0.1)){
+  signals_larup_interjacent <- cbind(rep(p_up),lar(sample,p_up,1,size=1000))
+  signals_larup <- rbind(signals_larup,signals_larup_interjacent)
+  print(p_up) #Проверка прогресса выполнения
+}
+colnames(signals_up) <- c("p_up","period","position","lag0","lag1","lag2","lag3")
+rm(signals_larup_interjacent, p_up)
+```
+
+Посмотрим какой перформанс показывает стратегия роста (lar_up) в зависимости от заданной барьерной вероятности роста (p_up). Подойдем к этому вопросу с финансового аспекта - сравним накопленные доходности. Для этого полученную на предыдущем этапе таблицу (signals_larup) с сигналами и доходностями разделим в соответствии с выбранной вероятностью и проверим результат на каждой из них. Для последующих расчетов накопленных доходностей нам будут необходимы только столбцы period, position, lag0. Накопленную доходность будем рассчитывать на каждый момент времени, поскольку нам интересно как вела себя стратегия роста на заданном таймфрейме в зависимости от задаваемой нами барьерной вероятности.
+
+Получим результаты накопленных доходностей для разных барьерных вероятностей. WARNING: Запускать следующий блок не обязательно, поскольку результат данной компиляции уже есть в вашем workspace (в верхнем-правом углу ищи results_larup_aggr). Можно конечно запустить (займет ~40 минут для всего вектора из 10 подставляемых значений барьерной вероятности).
+
+```{r}
+#For p_up == 0.1
+results_larup_0.1 <- signals_larup %>%
+  filter(p_up == 0.1) %>%
+  select(period, position, lag0)
+
+results_larup_0.1 <- cbind(results_larup_0.1, return = c(rep(0, nrow(results_larup_0.1))), return_acc = c(rep(0, nrow(results_larup_0.1))))
+for (i in 1:nrow(results_larup_0.1)){
+    if (results_larup_0.1$position[i] == 1){
+      results_larup_0.1$return[i] = results_larup_0.1$lag0[i]
+    }
+}
+for (i in 1:nrow(results_larup_0.1)){
+    results_larup_0.1$return_acc[i] <- sum(results_larup_0.1$return[1:i])
+}
+#For p_up == 0.2
+results_larup_0.2 <- signals_larup %>%
+  filter(p_up == 0.2) %>%
+  select(period, position, lag0)
+
+results_larup_0.2 <- cbind(results_larup_0.2, return = c(rep(0, nrow(results_larup_0.2))), return_acc = c(rep(0, nrow(results_larup_0.2))))
+for (i in 1:nrow(results_larup_0.2)){
+    if (results_larup_0.2$position[i] == 1){
+      results_larup_0.2$return[i] = results_larup_0.2$lag0[i]
+    }
+}
+for (i in 1:nrow(results_larup_0.2)){
+    results_larup_0.2$return_acc[i] <- sum(results_larup_0.2$return[1:i])
+}
+#For p_up == 0.3
+results_larup_0.3 <- signals_larup %>%
+  filter(p_up > 0.2 & p_up < 0.4) %>%
+  select(period, position, lag0)
+
+results_larup_0.3 <- cbind(results_larup_0.3, return = c(rep(0, nrow(results_larup_0.3))), return_acc = c(rep(0, nrow(results_larup_0.3))))
+for (i in 1:nrow(results_larup_0.3)){
+    if (results_larup_0.3$position[i] == 1){
+      results_larup_0.3$return[i] = results_larup_0.3$lag0[i]
+    }
+}
+for (i in 1:nrow(results_larup_0.3)){
+    results_larup_0.3$return_acc[i] <- sum(results_larup_0.3$return[1:i])
+}
+#For p_up == 0.4
+results_larup_0.4 <- signals_larup %>%
+  filter(p_up == 0.4) %>%
+  select(period, position, lag0)
+
+results_larup_0.4 <- cbind(results_larup_0.4, return = c(rep(0, nrow(results_larup_0.4))), return_acc = c(rep(0, nrow(results_larup_0.4))))
+for (i in 1:nrow(results_larup_0.4)){
+    if (results_larup_0.4$position[i] == 1){
+      results_larup_0.4$return[i] = results_larup_0.4$lag0[i]
+    }
+}
+for (i in 1:nrow(results_larup_0.4)){
+    results_larup_0.4$return_acc[i] <- sum(results_larup_0.4$return[1:i])
+}
+#For p_up == 0.5
+results_larup_0.5 <- signals_larup %>%
+  filter(p_up == 0.5) %>%
+  select(period, position, lag0)
+
+results_larup_0.5 <- cbind(results_larup_0.5, return = c(rep(0, nrow(results_larup_0.5))), return_acc = c(rep(0, nrow(results_larup_0.5))))
+for (i in 1:nrow(results_larup_0.5)){
+    if (results_larup_0.5$position[i] == 1){
+      results_larup_0.5$return[i] = results_larup_0.5$lag0[i]
+    }
+}
+for (i in 1:nrow(results_larup_0.5)){
+    results_larup_0.5$return_acc[i] <- sum(results_larup_0.5$return[1:i])
+}
+#For p_up == 0.6
+results_larup_0.6 <- signals_larup %>%
+  filter(p_up == 0.6) %>%
+  select(period, position, lag0)
+
+results_larup_0.6 <- cbind(results_larup_0.6, return = c(rep(0, nrow(results_larup_0.6))), return_acc = c(rep(0, nrow(results_larup_0.6))))
+for (i in 1:nrow(results_larup_0.6)){
+    if (results_larup_0.6$position[i] == 1){
+      results_larup_0.6$return[i] = results_larup_0.6$lag0[i]
+    }
+}
+for (i in 1:nrow(results_larup_0.6)){
+    results_larup_0.6$return_acc[i] <- sum(results_larup_0.6$return[1:i])
+}
+#For p_up == 0.7
+results_larup_0.7 <- signals_larup %>%
+  filter(p_up > 0.6 & p_up < 0.8) %>%
+  select(period, position, lag0)
+
+results_larup_0.7 <- cbind(results_larup_0.7, return = c(rep(0, nrow(results_larup_0.7))), return_acc = c(rep(0, nrow(results_larup_0.7))))
+for (i in 1:nrow(results_larup_0.7)){
+    if (results_larup_0.7$position[i] == 1){
+      results_larup_0.7$return[i] = results_larup_0.7$lag0[i]
+    }
+}
+for (i in 1:nrow(results_larup_0.7)){
+    results_larup_0.7$return_acc[i] <- sum(results_larup_0.7$return[1:i])
+}
+#For p_up == 0.8
+results_larup_0.8 <- signals_larup %>%
+  filter(p_up == 0.8) %>%
+  select(period, position, lag0)
+
+results_larup_0.8 <- cbind(results_larup_0.8, return = c(rep(0, nrow(results_larup_0.8))), return_acc = c(rep(0, nrow(results_larup_0.8))))
+for (i in 1:nrow(results_larup_0.8)){
+    if (results_larup_0.8$position[i] == 1){
+      results_larup_0.8$return[i] = results_larup_0.8$lag0[i]
+    }
+}
+for (i in 1:nrow(results_larup_0.8)){
+    results_larup_0.8$return_acc[i] <- sum(results_larup_0.8$return[1:i])
+}
+#For p_up == 0.9
+results_larup_0.9 <- signals_larup %>%
+  filter(p_up == 0.9) %>%
+  select(period, position, lag0)
+
+results_larup_0.9 <- cbind(results_larup_0.9, return = c(rep(0, nrow(results_larup_0.9))), return_acc = c(rep(0, nrow(results_larup_0.9))))
+for (i in 1:nrow(results_larup_0.9)){
+    if (results_larup_0.9$position[i] == 1){
+      results_larup_0.9$return[i] = results_larup_0.9$lag0[i]
+    }
+}
+for (i in 1:nrow(results_larup_0.9)){
+    results_larup_0.9$return_acc[i] <- sum(results_larup_0.9$return[1:i])
+}
+```
+
+Перейдем к результатам: (запускать)
+
+```{r}
+results_larup_aggr <- data.frame(period = results_larup_0.1$period, p_up0.1 = results_larup_0.1$return_acc, p_up0.2 = results_larup_0.2$return_acc, p_up0.3 = results_larup_0.3$return_acc, p_up0.4 = results_larup_0.4$return_acc, p_up0.5 = results_larup_0.5$return_acc, p_up0.6 = results_larup_0.6$return_acc, p_up0.7 = results_larup_0.7$return_acc, p_up0.8 = results_larup_0.8$return_acc, p_up0.9 = results_larup_0.9$return_acc)
+results_larup_aggr$period <- as.POSIXct(results_larup_aggr$period)
+#Построим график накопленных доходностей для классификатора с разными барьерными вероятностями
+dd <- melt(results_larup_aggr, id = c("period"))
+colnames(dd) <- c("period","probability","return_acc")
+ggplot(dd) + geom_line(aes(x = period, y = return_acc, colour = probability)) + scale_colour_manual(values = c("red","green","coral3","black","lightpink1","thistle","purple1","aquamarine1","cyan1")) + ggtitle("Сравнение накопленной доходности по стратегии роста\nс разными барьерными вероятностями") + ylab("Накопленная доходность, %") + xlab("Дата")
+#Посмотрим на зависимость ликвидационной стоимости портфеля от барьерной вероятности функции роста
+Return_acc <- c(tail(results_larup_0.1$return_acc, 1), tail(results_larup_0.2$return_acc, 1), tail(results_larup_0.3$return_acc, 1), tail(results_larup_0.4$return_acc, 1), tail(results_larup_0.5$return_acc, 1), tail(results_larup_0.6$return_acc, 1), tail(results_larup_0.7$return_acc, 1), tail(results_larup_0.8$return_acc, 1), tail(results_larup_0.9$return_acc, 1))
+returns_larup <- data.frame(P_up = seq(0.1,0.9,0.1), Return = Return_acc)
+returns_larup$Return <- round(returns_larup$Return, 1)
+ggplot(returns_larup) + geom_bar(aes(x = P_up, y = Return, color = factor(P_up), fill = factor(P_up)), stat = "identity") + geom_text(aes(x = P_up, y = Return, label = Return)) + ggtitle("Зависимость ликвидационной стоимости портфеля \nот барьерной вероятности функции роста") + xlab("P_up") + ylab("Portfolio Salvage, %")
+```
+
+По графической интерпретации анализа делаем вывод о том, что при значении барьерной вероятности на рост 0.2, на данных обучающей выборки мы получаем наибольшую ликвидационную стоимость портфеля. Также, хорошое качество на основе критерия накопленной доходности показала компиляция с заданой барьерной вероятностью 0.1. Отметим тенденцию к снижению накопленной доходности при повышении барьерной вероятности роста стратегии, что скорее всего вызвано тенденционным характером, который создает функция логистической авторегрессии. При данной калибровке отрицательная доходность была продемонстрирована при барьерной вероятности роста равной 0.6. Таким образом, на основе финансового критерия накопленой доходности, оптимальным параметром барьерной доходности на рост на обучающей выборке оказалась вероятность равная 0.2. Иными словами, наша модель должна быть уверена как минимум на 20% в своем прогнозе, чтобы предоставить нам сигнал на покупку.
+
+Попробуем найти оптимальные параметры барьерной вероятности на основе статистического критерия качества бинарной классификации модели - ROC - кривой. Для этого введем следующие переменные: TP (True Positive) - количество наблюдений, в которых модель предсказа рост и рост действительно произошел, FN (False Negative) - количество наблюдений, в которых модель не предсказала рост, а рост произошел, FP (False Positive) - количество наблюдений, в которых модель предсказала рост, а роста не произошло, TN (True Negative) - количество наблюдений, в который модель не предсказала роста и этого не произошло, TPR - доля наблюдений, в которых модель предсказала рост и рост действительно произошел в числе наблюдений, когда рост действительно происходил (TP/(TP+FN)), FPR - доля наблюдений, в которых модель прогнозировала рост, когда его не было в числе наблюдений, когда роста действительно не было (=FP/(FP+TN)). 
+
+Построим ROC - кривую для нашего бинарного классификатора роста. WARNING: Запускать следующий блок не обязательно, поскольку результат данной компиляции уже есть в вашем workspace (в верхнем-правом углу ищи larup_ROC). Можно конечно запустить (займет ~30 минут для всего вектора из 10 подставляемых значений барьерной вероятности).
+
+```{r}
+#larup0.1
+TP_larup0.1 <- 0
+FN_larup0.1 <- 0
+FP_larup0.1 <- 0
+TN_larup0.1 <- 0
+for (i in 1:nrow(results_larup_0.1)){
+  if (results_larup_0.1$position[i] == 1 & results_larup_0.1$lag0[i] > 0){
+    TP_larup0.1 <- TP_larup0.1 + 1
+  }
+  if (results_larup_0.1$position[i] == 0 & results_larup_0.1$lag0[i] > 0){
+    FN_larup0.1 <- FN_larup0.1 + 1
+  }
+  if (results_larup_0.1$position[i] == 1 & results_larup_0.1$lag0[i] <= 0){
+    FP_larup0.1 <- FP_larup0.1 + 1
+  }
+  if (results_larup_0.1$position[i] == 0 & results_larup_0.1$lag0[i] <= 0){
+    TN_larup0.1 <- TN_larup0.1 + 1
+  }
+}
+TPR_larup0.1 <- TP_larup0.1/(TP_larup0.1+FN_larup0.1)
+FPR_larup0.1 <- FP_larup0.1/(FP_larup0.1+TN_larup0.1)
+#larup0.2
+TP_larup0.2 <- 0
+FN_larup0.2 <- 0
+FP_larup0.2 <- 0
+TN_larup0.2 <- 0
+for (i in 1:nrow(results_larup_0.2)){
+  if (results_larup_0.2$position[i] == 1 & results_larup_0.2$lag0[i] > 0){
+    TP_larup0.2 <- TP_larup0.2 + 1
+  }
+  if (results_larup_0.2$position[i] == 0 & results_larup_0.2$lag0[i] > 0){
+    FN_larup0.2 <- FN_larup0.2 + 1
+  }
+  if (results_larup_0.2$position[i] == 1 & results_larup_0.2$lag0[i] <= 0){
+    FP_larup0.2 <- FP_larup0.2 + 1
+  }
+  if (results_larup_0.2$position[i] == 0 & results_larup_0.2$lag0[i] <= 0){
+    TN_larup0.2 <- TN_larup0.2 + 1
+  }
+}
+TPR_larup0.2 <- TP_larup0.2/(TP_larup0.2+FN_larup0.2)
+FPR_larup0.2 <- FP_larup0.2/(FP_larup0.2+TN_larup0.2)
+#larup0.3
+TP_larup0.3 <- 0
+FN_larup0.3 <- 0
+FP_larup0.3 <- 0
+TN_larup0.3 <- 0
+for (i in 1:nrow(results_larup_0.3)){
+  if (results_larup_0.3$position[i] == 1 & results_larup_0.3$lag0[i] > 0){
+    TP_larup0.3 <- TP_larup0.3 + 1
+  }
+  if (results_larup_0.3$position[i] == 0 & results_larup_0.3$lag0[i] > 0){
+    FN_larup0.3 <- FN_larup0.3 + 1
+  }
+  if (results_larup_0.3$position[i] == 1 & results_larup_0.3$lag0[i] <= 0){
+    FP_larup0.3 <- FP_larup0.3 + 1
+  }
+  if (results_larup_0.3$position[i] == 0 & results_larup_0.3$lag0[i] <= 0){
+    TN_larup0.3 <- TN_larup0.3 + 1
+  }
+}
+TPR_larup0.3 <- TP_larup0.3/(TP_larup0.3+FN_larup0.3)
+FPR_larup0.3 <- FP_larup0.3/(FP_larup0.3+TN_larup0.3)
+#larup0.4
+TP_larup0.4 <- 0
+FN_larup0.4 <- 0
+FP_larup0.4 <- 0
+TN_larup0.4 <- 0
+for (i in 1:nrow(results_larup_0.4)){
+  if (results_larup_0.4$position[i] == 1 & results_larup_0.4$lag0[i] > 0){
+    TP_larup0.4 <- TP_larup0.4 + 1
+  }
+  if (results_larup_0.4$position[i] == 0 & results_larup_0.4$lag0[i] > 0){
+    FN_larup0.4 <- FN_larup0.4 + 1
+  }
+  if (results_larup_0.4$position[i] == 1 & results_larup_0.4$lag0[i] <= 0){
+    FP_larup0.4 <- FP_larup0.4 + 1
+  }
+  if (results_larup_0.4$position[i] == 0 & results_larup_0.4$lag0[i] <= 0){
+    TN_larup0.4 <- TN_larup0.4 + 1
+  }
+}
+TPR_larup0.4 <- TP_larup0.4/(TP_larup0.4+FN_larup0.4)
+FPR_larup0.4 <- FP_larup0.4/(FP_larup0.4+TN_larup0.4)
+#larup0.5
+TP_larup0.5 <- 0
+FN_larup0.5 <- 0
+FP_larup0.5 <- 0
+TN_larup0.5 <- 0
+for (i in 1:nrow(results_larup_0.5)){
+  if (results_larup_0.5$position[i] == 1 & results_larup_0.5$lag0[i] > 0){
+    TP_larup0.5 <- TP_larup0.5 + 1
+  }
+  if (results_larup_0.5$position[i] == 0 & results_larup_0.5$lag0[i] > 0){
+    FN_larup0.5 <- FN_larup0.5 + 1
+  }
+  if (results_larup_0.5$position[i] == 1 & results_larup_0.5$lag0[i] <= 0){
+    FP_larup0.5 <- FP_larup0.5 + 1
+  }
+  if (results_larup_0.5$position[i] == 0 & results_larup_0.5$lag0[i] <= 0){
+    TN_larup0.5 <- TN_larup0.5 + 1
+  }
+}
+TPR_larup0.5 <- TP_larup0.5/(TP_larup0.5+FN_larup0.5)
+FPR_larup0.5 <- FP_larup0.5/(FP_larup0.5+TN_larup0.5)
+#larup0.6
+TP_larup0.6 <- 0
+FN_larup0.6 <- 0
+FP_larup0.6 <- 0
+TN_larup0.6 <- 0
+for (i in 1:nrow(results_larup_0.6)){
+  if (results_larup_0.6$position[i] == 1 & results_larup_0.6$lag0[i] > 0){
+    TP_larup0.6 <- TP_larup0.6 + 1
+  }
+  if (results_larup_0.6$position[i] == 0 & results_larup_0.6$lag0[i] > 0){
+    FN_larup0.6 <- FN_larup0.6 + 1
+  }
+  if (results_larup_0.6$position[i] == 1 & results_larup_0.6$lag0[i] <= 0){
+    FP_larup0.6 <- FP_larup0.6 + 1
+  }
+  if (results_larup_0.6$position[i] == 0 & results_larup_0.6$lag0[i] <= 0){
+    TN_larup0.6 <- TN_larup0.6 + 1
+  }
+}
+TPR_larup0.6 <- TP_larup0.6/(TP_larup0.6+FN_larup0.6)
+FPR_larup0.6 <- FP_larup0.6/(FP_larup0.6+TN_larup0.6)
+#larup0.7
+TP_larup0.7 <- 0
+FN_larup0.7 <- 0
+FP_larup0.7 <- 0
+TN_larup0.7 <- 0
+for (i in 1:nrow(results_larup_0.7)){
+  if (results_larup_0.7$position[i] == 1 & results_larup_0.7$lag0[i] > 0){
+    TP_larup0.7 <- TP_larup0.7 + 1
+  }
+  if (results_larup_0.7$position[i] == 0 & results_larup_0.7$lag0[i] > 0){
+    FN_larup0.7 <- FN_larup0.7 + 1
+  }
+  if (results_larup_0.7$position[i] == 1 & results_larup_0.7$lag0[i] <= 0){
+    FP_larup0.7 <- FP_larup0.7 + 7
+  }
+  if (results_larup_0.7$position[i] == 0 & results_larup_0.7$lag0[i] <= 0){
+    TN_larup0.7 <- TN_larup0.7 + 1
+  }
+}
+TPR_larup0.7 <- TP_larup0.7/(TP_larup0.7+FN_larup0.7)
+FPR_larup0.7 <- FP_larup0.7/(FP_larup0.7+TN_larup0.7)
+#larup0.8
+TP_larup0.8 <- 0
+FN_larup0.8 <- 0
+FP_larup0.8 <- 0
+TN_larup0.8 <- 0
+for (i in 1:nrow(results_larup_0.8)){
+  if (results_larup_0.8$position[i] == 1 & results_larup_0.8$lag0[i] > 0){
+    TP_larup0.8 <- TP_larup0.8 + 1
+  }
+  if (results_larup_0.8$position[i] == 0 & results_larup_0.8$lag0[i] > 0){
+    FN_larup0.8 <- FN_larup0.8 + 1
+  }
+  if (results_larup_0.8$position[i] == 1 & results_larup_0.8$lag0[i] <= 0){
+    FP_larup0.8 <- FP_larup0.8 + 1
+  }
+  if (results_larup_0.8$position[i] == 0 & results_larup_0.8$lag0[i] <= 0){
+    TN_larup0.8 <- TN_larup0.8 + 1
+  }
+}
+TPR_larup0.8 <- TP_larup0.8/(TP_larup0.8+FN_larup0.8)
+FPR_larup0.8 <- FP_larup0.8/(FP_larup0.8+TN_larup0.8)
+#larup0.9
+TP_larup0.9 <- 0
+FN_larup0.9 <- 0
+FP_larup0.9 <- 0
+TN_larup0.9 <- 0
+for (i in 1:nrow(results_larup_0.9)){
+  if (results_larup_0.9$position[i] == 1 & results_larup_0.9$lag0[i] > 0){
+    TP_larup0.9 <- TP_larup0.9 + 1
+  }
+  if (results_larup_0.9$position[i] == 0 & results_larup_0.9$lag0[i] > 0){
+    FN_larup0.9 <- FN_larup0.9 + 1
+  }
+  if (results_larup_0.9$position[i] == 1 & results_larup_0.9$lag0[i] <= 0){
+    FP_larup0.9 <- FP_larup0.9 + 1
+  }
+  if (results_larup_0.9$position[i] == 0 & results_larup_0.9$lag0[i] <= 0){
+    TN_larup0.9 <- TN_larup0.9 + 1
+  }
+}
+TPR_larup0.9 <- TP_larup0.9/(TP_larup0.9+FN_larup0.9)
+FPR_larup0.9 <- FP_larup0.9/(FP_larup0.9+TN_larup0.9)
+```
+
+Перейдем к результатам: (запускать)
+
+```{r}
+TPR_larup <- c(TPR_larup0.1, TPR_larup0.2, TPR_larup0.3, TPR_larup0.4, TPR_larup0.5, TPR_larup0.6, TPR_larup0.7, TPR_larup0.8, TPR_larup0.9)
+FPR_larup <- c(FPR_larup0.1, FPR_larup0.2, FPR_larup0.3, FPR_larup0.4, FPR_larup0.5, FPR_larup0.6, FPR_larup0.7, FPR_larup0.8, FPR_larup0.9)
+larup_ROC <- data.frame(P_up = seq(0.1,0.9,0.1), FPR_larup = FPR_larup, TPR_larup = TPR_larup)
+ggplot(larup_ROC) + geom_line(aes(x = FPR_larup, y = TPR_larup, color = factor(P_up), group = 2)) + geom_point(aes(x = FPR_larup, y = TPR_larup, color = factor(P_up), size = 0.25)) + geom_line(aes(x = c(0, 0.2, 0.3, 0.5, 0.6, 0.7, 0.8, 0.9, 1), y = c(0, 0.2, 0.3, 0.5, 0.6, 0.7, 0.8, 0.9, 1), group = 2)) + ggtitle("ROC кривая для стратегии роста") + xlab("False positive rate") + ylab("True positive rate")
+#Посмотрим на расстояние до точки идеального классификатора для каждой из точек ROC кривой
+rocdist <- c()
+for (i in 1:nrow(larup_ROC)){
+  rocdist[i] <- sqrt(((0 - larup_ROC$FPR_larup[i])**2)+((1 - larup_ROC$TPR_larup[i])**2))
+}
+larup_rocdist <- data.frame(P_up = seq(0.1, 0.9, 0.1), rocdist = rocdist)
+ggplot(larup_rocdist) + geom_line(aes(x = P_up, y = rocdist))+geom_point(aes(x = P_up, y = rocdist, color = factor(P_up), size = 0.25)) + ggtitle("Зависимость расстояния от точек ROC кривой до точки\nидеального классификатора от барьерной вероятности \nфункции роста") + xlab("P_up") + ylab("ROC dist")
+```
+
+Наблюдаем близкую к линии бесполезного классификатора (TPR = FPR) ROC кривую. Некоторые из точек кривой лежат на точках около максимально бесполезных классификаторов. Иными словами наш классификатор практически не различает классы роста и его отсутствия, о чем свидетельствует как площадь под ROC кривой (в диапазоне 0.5-0.6), так и расстояние от точек кривой до точки идеального классификатора (0,1). Наиболее близкой и по совметительству наиболее лучшей на данной обучающей выборке оказалась точка, соответствующая барьерной вероятности роста p_up = 0.5. Таким образом, на основе статистического критерия качества бинарной классификации модели оптимальным параметром барьерной доходности на рост на обучающей выборке оказалась вероятность равная 0.5. Иными словами, наша модель должна быть уверена как минимум на 50% в своем прогнозе, чтобы предоставить нам сигнал на покупку.
+
+Продемонстрируем на одном графике результаты работы классификатора на данных обучающей выборки (sample) при а) Базовой барьерной вероятности 0.5 б) Roc-оптимальной барьерной вероятности 0.5 в) Финансово-оптимальной барьерной вероятности 0.2, а также сравним с результатами стратегии купи и держи. В данном случае пункты А и Б совпадают. (Запускать)
+
+```{r}
+buynhold <- c(1:nrow(results_larup_0.1))
+for (i in 1:nrow(results_larup_0.1)){
+  buynhold[i] = sum(results_larup_0.1$lag0[1:i])
+}
+results_larup_final <- data.frame(period = results_larup_aggr$period, Financially_optimal = results_larup_0.2$return_acc, ROC_optimal = results_larup_0.5$return_acc, Buynhold = buynhold)
+ddup <- melt(results_larup_final, id = c("period"))
+colnames(ddup) <- c("period","strategy","return")
+ggplot(ddup) + geom_line(aes(x = period, y = return, colour = strategy)) + scale_colour_manual(values = c("red","green","blue")) + ggtitle("Сравнение накопленной доходности по стратегиям роста\nс разными оптимальными барьерными вероятностями и\nстратегией купи и держи") + ylab("Накопленная доходность, %") + xlab("Дата")
+```
+
+По представленному графику напрашивается явный вывод: стратегия с финансово-оптимальным заданным значением барьерной вероятности роста повторяет движение стратегии купи и держи, что обосновывается тем, что сигналы по первой стратегии получаются практически в каждом периоде и следуют основной тенденции рынка данного актива. Стратегия со статистически-оптимальным параметром (она же с базовой вероятностью 0.5) показала результат значительно хуже.
+
+Построим аналогичные графики на данных out of sample.
+
+Получим сигналы и на их основе сосчитаем накопленные доходности для двух значений вероятности 0.2 и 0.5 на тестовой выборке. WARNING: Запускать следующий блок не обязательно, поскольку результаты данной компиляции уже есть в вашем workspace (в верхнем-правом углу ищи signal_larup_oos и results_larup_oos_aggr). Можно конечно запустить (займет ~30 минут для 2 значений барьерной вероятности на всей выборке).
+
+```{r}
+signals_larup_oos <- data.frame(p_up = c(), period = c(), position = c(), lag0 = c(), lag1 = c(), lag2 = c(), lag3 = c())
+for (p_up in c(0.2, 0.5)){
+  signals_larup_oos_interjacent <- cbind(rep(p_up),lar(out_of_sample,p_up,1,size=1000))
+  signals_larup_oos <- rbind(signals_larup_oos,signals_larup_oos_interjacent)
+  print(p_up) #Проверка прогресса выполнения
+}
+colnames(signals_larup_oos) <- c("p_up","period","position","lag0","lag1","lag2","lag3")
+rm(signals_larup_oos_interjacent, p_up)
+#For p_up == 0.2
+results_larup_oos_0.2 <- signals_larup_oos %>%
+  filter(p_up == 0.2) %>%
+  select(period, position, lag0)
+
+results_larup_oos_0.2 <- cbind(results_larup_oos_0.2, return = c(rep(0, nrow(results_larup_oos_0.2))), return_acc = c(rep(0, nrow(results_larup_oos_0.2))))
+for (i in 1:nrow(results_larup_oos_0.2)){
+    if (results_larup_oos_0.2$position[i] == 1){
+      results_larup_oos_0.2$return[i] = results_larup_oos_0.2$lag0[i]
+    }
+}
+for (i in 1:nrow(results_larup_oos_0.2)){
+    results_larup_oos_0.2$return_acc[i] <- sum(results_larup_oos_0.2$return[1:i])
+}
+#For p_up == 0.5
+results_larup_oos_0.5 <- signals_larup_oos %>%
+  filter(p_up == 0.5) %>%
+  select(period, position, lag0)
+
+results_larup_oos_0.5 <- cbind(results_larup_oos_0.5, return = c(rep(0, nrow(results_larup_oos_0.5))), return_acc = c(rep(0, nrow(results_larup_oos_0.5))))
+for (i in 1:nrow(results_larup_oos_0.5)){
+    if (results_larup_oos_0.5$position[i] == 1){
+      results_larup_oos_0.5$return[i] = results_larup_oos_0.5$lag0[i]
+    }
+}
+for (i in 1:nrow(results_larup_oos_0.5)){
+    results_larup_oos_0.5$return_acc[i] <- sum(results_larup_oos_0.5$return[1:i])
+}
+buynholdoos <- c(1:nrow(results_larup_oos_0.2))
+for (i in 1:nrow(results_larup_oos_0.2)){
+  buynholdoos[i] = sum(results_larup_oos_0.2$lag0[1:i])
+}
+```
+
+Построим графики: (запускать)
+
+```{r}
+results_larup_oos_aggr <- data.frame(period = results_larup_oos_0.2$period, Financially_optimal = results_larup_oos_0.2$return_acc, ROC_optimal = results_larup_oos_0.5$return_acc, Buynhold = buynholdoos)
+results_larup_oos_aggr$period <- as.POSIXct(results_larup_oos_aggr$period)
+ddoos <- melt(results_larup_oos_aggr, id = c("period"))
+colnames(ddoos) <- c("period","strategy","return")
+ggplot(ddoos) + geom_line(aes(x = period, y = return, colour = strategy)) + scale_colour_manual(values = c("red","green","blue")) + ggtitle("Сравнение накопленной доходности по стратегии роста\nс разными оптимальными барьерными вероятностями полученными\nна обучающей выборке") + ylab("Накопленная доходность, %") + xlab("Дата")
+```
+
+Сравним поведение графиков накопленной доходности при откалиброванных значениях барьерных вероятностей на обучающей и тестовой выборках на общем графике. (Запускать)
+
+```{r}
+comparison_larup <- rbind(results_larup_final, results_larup_oos_aggr)%>%
+  arrange(period)
+comparison_larup$period <- as.POSIXct(comparison_larup$period)
+ddupcomp <- melt(comparison_larup, id = c("period"))
+colnames(ddupcomp) <- c("period","strategy","return")
+ggplot(ddupcomp) + geom_line(aes(x = period, y = return, colour = strategy)) + scale_colour_manual(values = c("red","green","blue")) + geom_vline(aes(xintercept = ddupcomp$period[65154]), linetype = "dashed", size = 1) +  ggtitle("Сравнение накопленной доходности по стратегиям роста\nс разными оптимальными барьерными вероятностями и\nстратегией купи и держи") + labs(subtitle = "После вертикальной прямой тестовая выборка") + ylab("Накопленная доходность, %") + xlab("Дата")
+```
+
+Протестируем стратегию падения lar_down. Для этого при инициировании универсальной функции (под обе стратегии) поставим значение барьерной вероятности для стратегии роста p_up равную 1. В таком случае мы будем получать сигналы только о падении цены в случае, если вероятность этого события согласно оцененному функцией значению больше заданному нами значению барьерной вероятности p_down, а сигналы о росте цены мы не будем получать вовсе, поскольку для соответствующего сигнала классификатор должен быть уверен на 100% в росте цены, чего не случается практически никогда. Таким образом, для p_down в диапазоне от 0.1 до 0.9 (0 - функция всегда будет уверена в достоверности своего прогноза на рост, 1 - практически никогда не будет уверена, поэтому крайние значения брать не будем и ограничимся шагом 0.1 в целях экономии времени на итерациях) инициируем функцию lar и занесем полученные значения сигналов (1 - long, 0 - nothing, -1 - short). Наша цель - подобрать такое оптимальное значение барьерной вероятности p_down, при которой наша стратегия покажет лучший результат. Качество стратегии в зависимости от барьерной вероятности мы проверим как статистически (ROC - кривая), так и финансово (по графику накопленной доходности). Инициируем цикл, который будет перебирать указанные выше значения p_down и поочередно подставлять их в функцию lar. В результате для каждой вероятности мы получим таблицу, содержащую: 1) Период, в котором получен сигнал (period) 2) Непосредственно сам сигнал (position) 3) Значения доходности предшествующих трех периодов, используемые для прогноза (lag1, lag2, lag3) 4) Реальное значение доходности прогнозируемого периода.
+
+Получим сигналы. WARNING: Запускать следующий блок не обязательно, поскольку результат данной компиляции уже есть в вашем workspace (в верхнем-правом углу ищи signals_lardown). Можно конечно запустить (займет ~2.5 часа для всей выборки).
+
+```{r}
+signals_lardown <- data.frame(p_down = c(), period = c(), position = c(), lag0 = c(), lag1 = c(), lag2 = c(), lag3 = c())
+for (p_down in seq(0.1,0.9,0.1)){
+  signals_lardown_interjacent <- cbind(rep(p_down),lar(sample,1,p_down,size=1000))
+  signals_lardown <- rbind(signals_lardown,signals_lardown_interjacent)
+  print(p_down) #Проверка прогресса выполнения
+}
+colnames(signals_lardown) <- c("p_down","period","position","lag0","lag1","lag2","lag3")
+rm(signals_lardown_interjacent, p_down)
+```
+
+Посмотрим какой перформанс показывает стратегия падения (lar_down) в зависимости от заданной барьерной вероятности падения (p_down). Подойдем к этому вопросу с финансового аспекта - сравним накопленные доходности. Для этого полученную на предыдущем этапе таблицу (signals_lardown) с сигналами и доходностями разделим в соответствии с выбранной вероятностью и проверим результат на каждой из них. Для последующих расчетов накопленных доходностей нам будут необходимы только столбцы period, position, lag0. Накопленную доходность будем рассчитывать на каждый момент времени, поскольку нам интересно как вела себя стратегия роста на заданном таймфрейме в зависимости от задаваемой нами барьерной вероятности.
+
+Получим результаты накопленных доходностей для разных барьерных вероятностей. WARNING: Запускать следующий блок не обязательнопоскольку результат данной компиляции уже есть в вашем workspace (в верхнем-правом углу ищи results_lardown_aggr). Можно конечно запустить (займет ~40 минут для всего вектора из 10 подставляемых значений барьерной вероятности падения).
+
+```{r}
+#For p_down == 0.1
+results_lardown_0.1 <- signals_lardown %>%
+  filter(p_down == 0.1) %>%
+  select(period, position, lag0)
+
+results_lardown_0.1 <- cbind(results_lardown_0.1, return = c(rep(0, nrow(results_lardown_0.1))), return_acc = c(rep(0, nrow(results_lardown_0.1))))
+for (i in 1:nrow(results_lardown_0.1)){
+    if (results_lardown_0.1$position[i] == -1){
+      results_lardown_0.1$return[i] = -results_lardown_0.1$lag0[i]
+    }
+}
+for (i in 1:nrow(results_lardown_0.1)){
+    results_lardown_0.1$return_acc[i] <- sum(results_lardown_0.1$return[1:i])
+}
+#For p_down == 0.2
+results_lardown_0.2 <- signals_lardown %>%
+  filter(p_down == 0.2) %>%
+  select(period, position, lag0)
+
+results_lardown_0.2 <- cbind(results_lardown_0.2, return = c(rep(0, nrow(results_lardown_0.2))), return_acc = c(rep(0, nrow(results_lardown_0.2))))
+for (i in 1:nrow(results_lardown_0.2)){
+    if (results_lardown_0.2$position[i] == -1){
+      results_lardown_0.2$return[i] = -results_lardown_0.2$lag0[i]
+    }
+}
+for (i in 1:nrow(results_lardown_0.2)){
+    results_lardown_0.2$return_acc[i] <- sum(results_lardown_0.2$return[1:i])
+}
+#For p_down == 0.3
+results_lardown_0.3 <- signals_lardown %>%
+  filter(p_down > 0.2 & p_down < 0.4) %>%
+  select(period, position, lag0)
+
+results_lardown_0.3 <- cbind(results_lardown_0.3, return = c(rep(0, nrow(results_lardown_0.3))), return_acc = c(rep(0, nrow(results_lardown_0.3))))
+for (i in 1:nrow(results_lardown_0.3)){
+    if (results_lardown_0.3$position[i] == -1){
+      results_lardown_0.3$return[i] = -results_lardown_0.3$lag0[i]
+    }
+}
+for (i in 1:nrow(results_lardown_0.3)){
+    results_lardown_0.3$return_acc[i] <- sum(results_lardown_0.3$return[1:i])
+}
+#For p_down == 0.4
+results_lardown_0.4 <- signals_lardown %>%
+  filter(p_down == 0.4) %>%
+  select(period, position, lag0)
+
+results_lardown_0.4 <- cbind(results_lardown_0.4, return = c(rep(0, nrow(results_lardown_0.4))), return_acc = c(rep(0, nrow(results_lardown_0.4))))
+for (i in 1:nrow(results_lardown_0.4)){
+    if (results_lardown_0.4$position[i] == -1){
+      results_lardown_0.4$return[i] = -results_lardown_0.4$lag0[i]
+    }
+}
+for (i in 1:nrow(results_lardown_0.4)){
+    results_lardown_0.4$return_acc[i] <- sum(results_lardown_0.4$return[1:i])
+}
+#For p_down == 0.5
+results_lardown_0.5 <- signals_lardown %>%
+  filter(p_down == 0.5) %>%
+  select(period, position, lag0)
+
+results_lardown_0.5 <- cbind(results_lardown_0.5, return = c(rep(0, nrow(results_lardown_0.5))), return_acc = c(rep(0, nrow(results_lardown_0.5))))
+for (i in 1:nrow(results_lardown_0.5)){
+    if (results_lardown_0.5$position[i] == -1){
+      results_lardown_0.5$return[i] = -results_lardown_0.5$lag0[i]
+    }
+}
+for (i in 1:nrow(results_lardown_0.5)){
+    results_lardown_0.5$return_acc[i] <- sum(results_lardown_0.5$return[1:i])
+}
+#For p_down == 0.6
+results_lardown_0.6 <- signals_lardown %>%
+  filter(p_down == 0.6) %>%
+  select(period, position, lag0)
+
+results_lardown_0.6 <- cbind(results_lardown_0.6, return = c(rep(0, nrow(results_lardown_0.6))), return_acc = c(rep(0, nrow(results_lardown_0.6))))
+for (i in 1:nrow(results_lardown_0.6)){
+    if (results_lardown_0.6$position[i] == -1){
+      results_lardown_0.6$return[i] = -results_lardown_0.6$lag0[i]
+    }
+}
+for (i in 1:nrow(results_lardown_0.6)){
+    results_lardown_0.6$return_acc[i] <- sum(results_lardown_0.6$return[1:i])
+}
+#For p_down == 0.7
+results_lardown_0.7 <- signals_lardown %>%
+  filter(p_down > 0.6 & p_down < 0.8) %>%
+  select(period, position, lag0)
+
+results_lardown_0.7 <- cbind(results_lardown_0.7, return = c(rep(0, nrow(results_lardown_0.7))), return_acc = c(rep(0, nrow(results_lardown_0.7))))
+for (i in 1:nrow(results_lardown_0.7)){
+    if (results_lardown_0.7$position[i] == -1){
+      results_lardown_0.7$return[i] = -results_lardown_0.7$lag0[i]
+    }
+}
+for (i in 1:nrow(results_lardown_0.7)){
+    results_lardown_0.7$return_acc[i] <- sum(results_lardown_0.7$return[1:i])
+}
+#For p_down == 0.8
+results_lardown_0.8 <- signals_lardown %>%
+  filter(p_down == 0.8) %>%
+  select(period, position, lag0)
+
+results_lardown_0.8 <- cbind(results_lardown_0.8, return = c(rep(0, nrow(results_lardown_0.8))), return_acc = c(rep(0, nrow(results_lardown_0.8))))
+for (i in 1:nrow(results_lardown_0.8)){
+    if (results_lardown_0.8$position[i] == -1){
+      results_lardown_0.8$return[i] = -results_lardown_0.8$lag0[i]
+    }
+}
+for (i in 1:nrow(results_lardown_0.8)){
+    results_lardown_0.8$return_acc[i] <- sum(results_lardown_0.8$return[1:i])
+}
+#For p_down == 0.9
+results_lardown_0.9 <- signals_lardown %>%
+  filter(p_down == 0.9) %>%
+  select(period, position, lag0)
+
+results_lardown_0.9 <- cbind(results_lardown_0.9, return = c(rep(0, nrow(results_lardown_0.9))), return_acc = c(rep(0, nrow(results_lardown_0.9))))
+for (i in 1:nrow(results_lardown_0.9)){
+    if (results_lardown_0.9$position[i] == -1){
+      results_lardown_0.9$return[i] = -results_lardown_0.9$lag0[i]
+    }
+}
+for (i in 1:nrow(results_lardown_0.9)){
+    results_lardown_0.9$return_acc[i] <- sum(results_lardown_0.9$return[1:i])
+}
+```
+
+Перейдем к результатам: (Запускать)
+
+```{r}
+#Агрегированная таблица
+results_lardown_aggr <- data.frame(period = results_lardown_0.1$period, p_down0.1 = results_lardown_0.1$return_acc, p_down0.2 = results_lardown_0.2$return_acc, p_down0.3 = results_lardown_0.3$return_acc, p_down0.4 = results_lardown_0.4$return_acc, p_down0.5 = results_lardown_0.5$return_acc, p_down0.6 = results_lardown_0.6$return_acc, p_down0.7 = results_lardown_0.7$return_acc, p_down0.8 = results_lardown_0.8$return_acc, p_down0.9 = results_lardown_0.9$return_acc)
+#Преобразование в формат дат
+results_lardown_aggr$period <- as.POSIXct(results_lardown_aggr$period)
+#Преобразование таблицы (require(reshape2))
+dd_down <- melt(results_lardown_aggr, id = c("period"))
+colnames(dd_down) <- c("period","probability","return_acc")
+#График накопленной доходности
+ggplot(dd_down) + geom_line(aes(x = period, y = return_acc, colour = probability)) + scale_colour_manual(values = c("red","green","coral3","black","lightpink1","thistle","purple1","aquamarine1","cyan1")) + ggtitle("Сравнение накопленной доходности по стратегии падения\nс разными барьерными вероятностями") + ylab("Накопленная доходность, %") + xlab("Дата")
+#Посмотрим на зависимость ликвидационной стоимости портфеля от барьерной вероятности функции падения
+Return_acc_lardown <- c(tail(results_lardown_0.1$return_acc, 1), tail(results_lardown_0.2$return_acc, 1), tail(results_lardown_0.3$return_acc, 1), tail(results_lardown_0.4$return_acc, 1), tail(results_lardown_0.5$return_acc, 1), tail(results_lardown_0.6$return_acc, 1), tail(results_lardown_0.7$return_acc, 1), tail(results_lardown_0.8$return_acc, 1), tail(results_lardown_0.9$return_acc, 1))
+returns_lardown <- data.frame(P_down = seq(0.1,0.9,0.1), Return = Return_acc_lardown)
+returns_lardown$Return <- round(returns_lardown$Return, 1)
+ggplot(returns_lardown) + geom_bar(aes(x = P_down, y = Return, color = factor(P_down), fill = factor(P_down)), stat = "identity") + geom_text(aes(x = P_down, y = Return, label = Return)) + ggtitle("Зависимость ликвидационной стоимости портфеля \nот барьерной вероятности функции падения") + xlab("P_down") + ylab("Portfolio Salvage, %")
+```
+
+По графической интерпретации анализа делаем вывод о том, что при значении барьерной вероятности на падение 0.8, на данных обучающей выборки мы получаем наибольшую ликвидационную стоимость портфеля. Заметим, что по результатам данной калибровки, компиляция классификатора с барьерными вероятностями меньше 0.7 показали явный убыток. Отметим тенденцию к повышению накопленной доходности при повышении барьерной вероятности роста стратегии, что потверждает суждение о тенденционным характере, который создает функция логистической авторегрессии (встаем в некоторых периодах +/- тех же, что и при стратегии роста против рынка - уходим в убыток), поэтому стратегия падения в случае общего тренда актива на рост требует более серьезного отношения к возможным ошибкам классификации. При данной калибровке положительная околонулевая доходность была продемонстрирована только при барьерной вероятности роста равной 0.8. Таким образом, на основе финансового критерия накопленой доходности, оптимальным параметром барьерной доходности на падение на обучающей выборке оказалась вероятность равная 0.8. Иными словами, наша модель должна быть уверена как минимум на 80% в своем прогнозе, чтобы предоставить нам сигнал на продажу.
+
+Попробуем найти оптимальные параметры барьерной вероятности на основе статистического критерия качества бинарной классификации модели - ROC - кривой. Для этого введем следующие переменные: TP (True Positive) - количество наблюдений, в которых модель предсказа падение и падение действительно произошло, FN (False Negative) - количество наблюдений, в которых модель не предсказала падения, а падение произошло, FP (False Positive) - количество наблюдений, в которых модель предсказала падение, а падения не произошло, TN (True Negative) - количество наблюдений, в который модель не предсказала падения и этого не произошло, TPR - доля наблюдений, в которых модель предсказала падение и падение действительно произошло в числе наблюдений, когда падение действительно происходило (TP/(TP+FN)), FPR - доля наблюдений, в которых модель прогнозировала падение, когда его не было в числе наблюдений, когда падения действительно не было (=FP/(FP+TN)). 
+
+Построим ROC - кривую для нашего бинарного классификатора падения. WARNING: Запускать следующий блок не обязательно, поскольку результат данной компиляции уже есть в вашем workspace (в верхнем-правом углу ищи lardown_ROC). Можно конечно запустить (займет ~30 минут для всего вектора из 10 подставляемых значений барьерной вероятности).
+
+```{r}
+#lardown0.1
+TP_lardown0.1 <- 0
+FN_lardown0.1 <- 0
+FP_lardown0.1 <- 0
+TN_lardown0.1 <- 0
+for (i in 1:nrow(results_lardown_0.1)){
+  if (results_lardown_0.1$position[i] == -1 & results_lardown_0.1$lag0[i] < 0){
+    TP_lardown0.1 <- TP_lardown0.1 + 1
+  }
+  if (results_lardown_0.1$position[i] == 0 & results_lardown_0.1$lag0[i] < 0){
+    FN_lardown0.1 <- FN_lardown0.1 + 1
+  }
+  if (results_lardown_0.1$position[i] == -1 & results_lardown_0.1$lag0[i] >= 0){
+    FP_lardown0.1 <- FP_lardown0.1 + 1
+  }
+  if (results_lardown_0.1$position[i] == 0 & results_lardown_0.1$lag0[i] >= 0){
+    TN_lardown0.1 <- TN_lardown0.1 + 1
+  }
+}
+TPR_lardown0.1 <- TP_lardown0.1/(TP_lardown0.1+FN_lardown0.1)
+FPR_lardown0.1 <- FP_lardown0.1/(FP_lardown0.1+TN_lardown0.1)
+#lardown0.2
+TP_lardown0.2 <- 0
+FN_lardown0.2 <- 0
+FP_lardown0.2 <- 0
+TN_lardown0.2 <- 0
+for (i in 1:nrow(results_lardown_0.2)){
+  if (results_lardown_0.2$position[i] == -1 & results_lardown_0.2$lag0[i] < 0){
+    TP_lardown0.2 <- TP_lardown0.2 + 1
+  }
+  if (results_lardown_0.2$position[i] == 0 & results_lardown_0.2$lag0[i] < 0){
+    FN_lardown0.2 <- FN_lardown0.2 + 1
+  }
+  if (results_lardown_0.2$position[i] == -1 & results_lardown_0.2$lag0[i] >= 0){
+    FP_lardown0.2 <- FP_lardown0.2 + 1
+  }
+  if (results_lardown_0.2$position[i] == 0 & results_lardown_0.2$lag0[i] >= 0){
+    TN_lardown0.2 <- TN_lardown0.2 + 1
+  }
+}
+TPR_lardown0.2 <- TP_lardown0.2/(TP_lardown0.2+FN_lardown0.2)
+FPR_lardown0.2 <- FP_lardown0.2/(FP_lardown0.2+TN_lardown0.2)
+#lardown0.3
+TP_lardown0.3 <- 0
+FN_lardown0.3 <- 0
+FP_lardown0.3 <- 0
+TN_lardown0.3 <- 0
+for (i in 1:nrow(results_lardown_0.3)){
+  if (results_lardown_0.3$position[i] == -1 & results_lardown_0.3$lag0[i] < 0){
+    TP_lardown0.3 <- TP_lardown0.3 + 1
+  }
+  if (results_lardown_0.3$position[i] == 0 & results_lardown_0.3$lag0[i] < 0){
+    FN_lardown0.3 <- FN_lardown0.3 + 1
+  }
+  if (results_lardown_0.3$position[i] == -1 & results_lardown_0.3$lag0[i] >= 0){
+    FP_lardown0.3 <- FP_lardown0.3 + 1
+  }
+  if (results_lardown_0.3$position[i] == 0 & results_lardown_0.3$lag0[i] >= 0){
+    TN_lardown0.3 <- TN_lardown0.3 + 1
+  }
+}
+TPR_lardown0.3 <- TP_lardown0.3/(TP_lardown0.3+FN_lardown0.3)
+FPR_lardown0.3 <- FP_lardown0.3/(FP_lardown0.3+TN_lardown0.3)
+#lardown0.4
+TP_lardown0.4 <- 0
+FN_lardown0.4 <- 0
+FP_lardown0.4 <- 0
+TN_lardown0.4 <- 0
+for (i in 1:nrow(results_lardown_0.4)){
+  if (results_lardown_0.4$position[i] == -1 & results_lardown_0.4$lag0[i] < 0){
+    TP_lardown0.4 <- TP_lardown0.4+ 1
+  }
+  if (results_lardown_0.4$position[i] == 0 & results_lardown_0.4$lag0[i] < 0){
+    FN_lardown0.4 <- FN_lardown0.4 + 1
+  }
+  if (results_lardown_0.4$position[i] == -1 & results_lardown_0.4$lag0[i] >= 0){
+    FP_lardown0.4 <- FP_lardown0.4 + 1
+  }
+  if (results_lardown_0.4$position[i] == 0 & results_lardown_0.4$lag0[i] >= 0){
+    TN_lardown0.4 <- TN_lardown0.4 + 1
+  }
+}
+TPR_lardown0.4 <- TP_lardown0.4/(TP_lardown0.4+FN_lardown0.4)
+FPR_lardown0.4 <- FP_lardown0.4/(FP_lardown0.4+TN_lardown0.4)
+#lardown0.5
+TP_lardown0.5 <- 0
+FN_lardown0.5 <- 0
+FP_lardown0.5 <- 0
+TN_lardown0.5 <- 0
+for (i in 1:nrow(results_lardown_0.5)){
+  if (results_lardown_0.5$position[i] == -1 & results_lardown_0.5$lag0[i] < 0){
+    TP_lardown0.5 <- TP_lardown0.5 + 1
+  }
+  if (results_lardown_0.5$position[i] == 0 & results_lardown_0.5$lag0[i] < 0){
+    FN_lardown0.5 <- FN_lardown0.5 + 1
+  }
+  if (results_lardown_0.5$position[i] == -1 & results_lardown_0.5$lag0[i] >= 0){
+    FP_lardown0.5 <- FP_lardown0.5 + 1
+  }
+  if (results_lardown_0.5$position[i] == 0 & results_lardown_0.5$lag0[i] >= 0){
+    TN_lardown0.5 <- TN_lardown0.5 + 1
+  }
+}
+TPR_lardown0.5 <- TP_lardown0.5/(TP_lardown0.5+FN_lardown0.5)
+FPR_lardown0.5 <- FP_lardown0.5/(FP_lardown0.5+TN_lardown0.5)
+#lardown0.6
+TP_lardown0.6 <- 0
+FN_lardown0.6 <- 0
+FP_lardown0.6 <- 0
+TN_lardown0.6 <- 0
+for (i in 1:nrow(results_lardown_0.6)){
+  if (results_lardown_0.6$position[i] == -1 & results_lardown_0.6$lag0[i] < 0){
+    TP_lardown0.6 <- TP_lardown0.6 + 1
+  }
+  if (results_lardown_0.6$position[i] == 0 & results_lardown_0.6$lag0[i] < 0){
+    FN_lardown0.6 <- FN_lardown0.6 + 1
+  }
+  if (results_lardown_0.6$position[i] == -1 & results_lardown_0.6$lag0[i] >= 0){
+    FP_lardown0.6 <- FP_lardown0.6 + 1
+  }
+  if (results_lardown_0.6$position[i] == 0 & results_lardown_0.6$lag0[i] >= 0){
+    TN_lardown0.6 <- TN_lardown0.6 + 1
+  }
+}
+TPR_lardown0.6 <- TP_lardown0.6/(TP_lardown0.6+FN_lardown0.6)
+FPR_lardown0.6 <- FP_lardown0.6/(FP_lardown0.6+TN_lardown0.6)
+#lardown0.7
+TP_lardown0.7 <- 0
+FN_lardown0.7 <- 0
+FP_lardown0.7 <- 0
+TN_lardown0.7 <- 0
+for (i in 1:nrow(results_lardown_0.7)){
+  if (results_lardown_0.7$position[i] == -1 & results_lardown_0.7$lag0[i] < 0){
+    TP_lardown0.7 <- TP_lardown0.7 + 1
+  }
+  if (results_lardown_0.7$position[i] == 0 & results_lardown_0.7$lag0[i] < 0){
+    FN_lardown0.7 <- FN_lardown0.7 + 1
+  }
+  if (results_lardown_0.7$position[i] == -1 & results_lardown_0.7$lag0[i] >= 0){
+    FP_lardown0.7 <- FP_lardown0.7 + 1
+  }
+  if (results_lardown_0.7$position[i] == 0 & results_lardown_0.7$lag0[i] >= 0){
+    TN_lardown0.7 <- TN_lardown0.7 + 1
+  }
+}
+TPR_lardown0.7 <- TP_lardown0.7/(TP_lardown0.7+FN_lardown0.7)
+FPR_lardown0.7 <- FP_lardown0.7/(FP_lardown0.7+TN_lardown0.7)
+#lardown0.8
+TP_lardown0.8 <- 0
+FN_lardown0.8 <- 0
+FP_lardown0.8 <- 0
+TN_lardown0.8 <- 0
+for (i in 1:nrow(results_lardown_0.8)){
+  if (results_lardown_0.8$position[i] == -1 & results_lardown_0.8$lag0[i] < 0){
+    TP_lardown0.8 <- TP_lardown0.8 + 1
+  }
+  if (results_lardown_0.8$position[i] == 0 & results_lardown_0.8$lag0[i] < 0){
+    FN_lardown0.8 <- FN_lardown0.8 + 1
+  }
+  if (results_lardown_0.8$position[i] == -1 & results_lardown_0.8$lag0[i] >= 0){
+    FP_lardown0.8 <- FP_lardown0.8 + 1
+  }
+  if (results_lardown_0.8$position[i] == 0 & results_lardown_0.8$lag0[i] >= 0){
+    TN_lardown0.8 <- TN_lardown0.8 + 1
+  }
+}
+TPR_lardown0.8 <- TP_lardown0.8/(TP_lardown0.8+FN_lardown0.8)
+FPR_lardown0.8 <- FP_lardown0.8/(FP_lardown0.8+TN_lardown0.8)
+#lardown0.9
+TP_lardown0.9 <- 0
+FN_lardown0.9 <- 0
+FP_lardown0.9 <- 0
+TN_lardown0.9 <- 0
+for (i in 1:nrow(results_lardown_0.9)){
+  if (results_lardown_0.9$position[i] == -1 & results_lardown_0.9$lag0[i] < 0){
+    TP_lardown0.9 <- TP_lardown0.9 + 1
+  }
+  if (results_lardown_0.9$position[i] == 0 & results_lardown_0.9$lag0[i] < 0){
+    FN_lardown0.9 <- FN_lardown0.9 + 1
+  }
+  if (results_lardown_0.9$position[i] == -1 & results_lardown_0.9$lag0[i] >= 0){
+    FP_lardown0.9 <- FP_lardown0.9 + 1
+  }
+  if (results_lardown_0.9$position[i] == 0 & results_lardown_0.9$lag0[i] >= 0){
+    TN_lardown0.9 <- TN_lardown0.9 + 1
+  }
+}
+TPR_lardown0.9 <- TP_lardown0.9/(TP_lardown0.9+FN_lardown0.9)
+FPR_lardown0.9 <- FP_lardown0.9/(FP_lardown0.9+TN_lardown0.9)
+```
+
+Перейдем к результатам: (запускать)
+
+```{r}
+TPR_lardown <- c(TPR_lardown0.1, TPR_lardown0.2, TPR_lardown0.3, TPR_lardown0.4, TPR_lardown0.5, TPR_lardown0.6, TPR_lardown0.7, TPR_lardown0.8, TPR_lardown0.9)
+FPR_lardown <- c(FPR_lardown0.1, FPR_lardown0.2, FPR_lardown0.3, FPR_lardown0.4, FPR_lardown0.5, FPR_lardown0.6, FPR_lardown0.7, FPR_lardown0.8, FPR_lardown0.9)
+lardown_ROC <- data.frame(P_down = seq(0.1,0.9,0.1), FPR_lardown = FPR_lardown, TPR_lardown = TPR_lardown)
+ggplot(lardown_ROC) + geom_line(aes(x = FPR_lardown, y = TPR_lardown, color = factor(P_down), group = 2)) + geom_point(aes(x = FPR_lardown, y = TPR_lardown, color = factor(P_down), size = 0.25)) + geom_line(aes(x = c(0, 0.2, 0.3, 0.5, 0.6, 0.7, 0.8, 0.9, 1), y = c(0, 0.2, 0.3, 0.5, 0.6, 0.7, 0.8, 0.9, 1), group = 2)) + ggtitle("ROC кривая для стратегии падения") + xlab("False positive rate") + ylab("True positive rate")
+#Посмотрим на расстояние до точки идеального классификатора для каждой из точек ROC кривой
+rocdistdown <- c()
+for (i in 1:nrow(lardown_ROC)){
+  rocdistdown[i] <- sqrt(((0 - lardown_ROC$FPR_lardown[i])**2)+((1 - lardown_ROC$TPR_lardown[i])**2))
+}
+lardown_rocdist <- data.frame(P_down = seq(0.1, 0.9, 0.1), rocdist = rocdistdown)
+ggplot(lardown_rocdist) + geom_line(aes(x = P_down, y = rocdist))+geom_point(aes(x = P_down, y = rocdist, color = factor(P_down), size = 0.25)) + ggtitle("Зависимость расстояния от точек ROC кривой до точки\nидеального классификатора от барьерной вероятности \nфункции падения") + xlab("P_down") + ylab("ROC dist")
+```
+
+
+Наблюдаем близкую к линии бесполезного классификатора (TPR = FPR) ROC кривую. Некоторые из точек кривой лежат на точках около максимально бесполезных классификаторов. Иными словами наш классификатор практически не различает классы падения и его отсутствия, о чем свидетельствует как площадь под ROC кривой (в диапазоне 0.5-0.6), так и расстояние от точек кривой до точки идеального классификатора (0,1). Наиболее близкой и по совметительству наиболее лучшей на данной обучающей выборке оказалась точка, соответствующая барьерной вероятности падения p_down = 0.5. Таким образом, на основе статистического критерия качества бинарной классификации модели оптимальным параметром барьерной доходности на падение на обучающей выборке оказалась вероятность равная 0.5. Иными словами, наша модель должна быть уверена в своем прогнозе как минимум на 50%, чтобы предоставить нам сигнал на продажу.
+
+Продемонстрируем на одном графике результаты работы классификатора на данных обучающей выборки (sample) при а) Базовой барьерной вероятности 0.5 б) Roc-оптимальной барьерной вероятности 0.5 в) Финансово-оптимальной барьерной вероятности 0.8, а также сравним с результатами стратегии купи и держи. В данном случае пункты А и Б совпадают. (запускать)
+
+```{r}
+results_lardown_final <- data.frame(period = results_larup_aggr$period, Financially_optimal = results_lardown_0.8$return_acc, ROC_optimal = results_lardown_0.5$return_acc, Buynhold = buynhold)
+dddown <- melt(results_lardown_final, id = c("period"))
+colnames(dddown) <- c("period","strategy","return")
+ggplot(dddown) + geom_line(aes(x = period, y = return, colour = strategy)) + scale_colour_manual(values = c("red","green","blue")) + ggtitle("Сравнение накопленной доходности по стратегиям падения\nс разными оптимальными барьерными вероятностями и\nстратегией купи и держи") + ylab("Накопленная доходность, %") + xlab("Дата")
+```
+
+Наблюдаем диаметрально противоположые движения доходности по стратегии с ROC-оптимальной барьерной вероятностью и стратегией купи и держи, что обосновывается альтернативно пункту с маржинальной стратегией роста. Наилучшую накопленную доходность на конец периода продемонстрировала стратегия "купи и держи". Стратегия с финансово-оптимальным показателем барьерной вероятности продемонстрировала околонулевую доходность.
+
+Построим аналогичные графики на данных Out of sample
+
+Получим сигналы и на их основе сосчитаем накопленные доходности для двух значений вероятности 0.5 и 0.8 на тестовой выборке. WARNING: Запускать следующий блок не обязательно, поскольку результаты данной компиляции уже есть в вашем workspace (в верхнем-правом углу ищи signals_lardown_oos и results_larup_oos_aggr). Можно конечно запустить (займет ~30 минут для 2 значений барьерной вероятности на всей выборке).
+
+```{r}
+signals_lardown_oos <- data.frame(p_down = c(), period = c(), position = c(), lag0 = c(), lag1 = c(), lag2 = c(), lag3 = c())
+for (p_down in c(0.5, 0.8)){
+  signals_lardown_oos_interjacent <- cbind(rep(p_down),lar(out_of_sample,1,p_down,size=1000))
+  signals_lardown_oos <- rbind(signals_lardown_oos,signals_lardown_oos_interjacent)
+  print(p_down) #Проверка прогресса выполнения
+}
+colnames(signals_lardown_oos) <- c("p_down","period","position","lag0","lag1","lag2","lag3")
+rm(signals_lardown_oos_interjacent, p_down)
+#For p_down == 0.8
+results_lardown_oos_0.8 <- signals_lardown_oos %>%
+  filter(p_down == 0.8) %>%
+  select(period, position, lag0)
+
+results_lardown_oos_0.8 <- cbind(results_lardown_oos_0.8, return = c(rep(0, nrow(results_lardown_oos_0.8))), return_acc = c(rep(0, nrow(results_lardown_oos_0.8))))
+for (i in 1:nrow(results_lardown_oos_0.8)){
+    if (results_lardown_oos_0.8$position[i] == -1){
+      results_lardown_oos_0.8$return[i] = -results_lardown_oos_0.8$lag0[i]
+    }
+}
+for (i in 1:nrow(results_lardown_oos_0.8)){
+    results_lardown_oos_0.8$return_acc[i] <- sum(results_lardown_oos_0.8$return[1:i])
+}
+#For p_up == 0.5
+results_lardown_oos_0.5 <- signals_lardown_oos %>%
+  filter(p_down == 0.5) %>%
+  select(period, position, lag0)
+
+results_lardown_oos_0.5 <- cbind(results_lardown_oos_0.5, return = c(rep(0, nrow(results_lardown_oos_0.5))), return_acc = c(rep(0, nrow(results_lardown_oos_0.5))))
+for (i in 1:nrow(results_lardown_oos_0.5)){
+    if (results_lardown_oos_0.5$position[i] == -1){
+      results_lardown_oos_0.5$return[i] = -results_lardown_oos_0.5$lag0[i]
+    }
+}
+for (i in 1:nrow(results_lardown_oos_0.5)){
+    results_lardown_oos_0.5$return_acc[i] <- sum(results_lardown_oos_0.5$return[1:i])
+}
+```
+
+Построим графики: (запускать)
+
+```{r}
+results_lardown_oos_aggr <- data.frame(period = results_lardown_oos_0.8$period, Financially_optimal = results_lardown_oos_0.8$return_acc, ROC_optimal = results_lardown_oos_0.5$return_acc, Buynhold = buynholdoos)
+results_lardown_oos_aggr$period <- as.POSIXct(results_lardown_oos_aggr$period)
+ddoosdown <- melt(results_lardown_oos_aggr, id = c("period"))
+colnames(ddoosdown) <- c("period","strategy","return")
+ggplot(ddoosdown) + geom_line(aes(x = period, y = return, colour = strategy)) + scale_colour_manual(values = c("red","green","blue")) + ggtitle("Сравнение накопленной доходности по стратегии падения\nс разными оптимальными барьерными вероятностями полученными\nна обучающей выборке") + ylab("Накопленная доходность, %") + xlab("Дата")
+```
+
+Сравним поведение графиков накопленной доходности при откалиброванных значениях барьерных вероятностей на обучающей и тестовой выборках на общем графике. (запускать)
+
+```{r}
+comparison_lardown <- rbind(results_lardown_final, results_lardown_oos_aggr)%>%
+  arrange(period)
+comparison_lardown$period <- as.POSIXct(comparison_lardown$period)
+dddowncomp <- melt(comparison_lardown, id = c("period"))
+colnames(dddowncomp) <- c("period","strategy","return")
+ggplot(dddowncomp) + geom_line(aes(x = period, y = return, colour = strategy)) + scale_colour_manual(values = c("red","green","blue")) + geom_vline(aes(xintercept = dddowncomp$period[65154]), linetype = "dashed", size = 1) +  ggtitle("Сравнение накопленной доходности по стратегиям падения\nс разными оптимальными барьерными вероятностями и\nстратегией купи и держи") + labs(subtitle = "После вертикальной прямой тестовая выборка") + ylab("Накопленная доходность, %") + xlab("Дата")
+```
+
+
+3. Back testing совместной стратегии
+
+Для совместной стратегии ограничим выборку в целях экономии времени, уменьшив её в 10 раз.
+
+```{r}
+sample_lar <- sample %>%
+  slice((nrow(sample)*0.9):nrow(sample)) #Сразу возьмем те наблюдения, в которых известна доходность
+out_of_sample_lar <- out_of_sample %>%
+  slice(1:(nrow(out_of_sample)*0.1))
+```
+
+Оценим какая комбинация барьерных вероятностей покажет лучший результат на итоговой накопленной доходности
+
+Получим сигналы для совместных стратегий. WARNING: фрагмент кода ниже можно не запускать, нужные выборки уже есть в workspace (см. signals_lar в верхнем правом углу).
+
+```{r}
+signals_lar <- data.frame(p_up = c(), p_down = c(), period = c(), position = c(), lag0 = c(), lag1 = c(), lag2 = c(), lag3 = c())
+for (p_up in seq(0.1,0.9,0.1)){
+  for (p_down in seq(0.1,0.9,0.1)){
+    signals_lar_interjacent <- cbind(rep(p_up), rep(p_down), lar(sample_lar,p_up,p_down,size=100))
+    signals_lar <- rbind(signals_lar,signals_lar_interjacent)
+    print(p_up, p_down) #Проверка прогресса выполнения
+  }
+}
+colnames(signals_lar) <- c("p_up","p_down","period","position","lag0","lag1","lag2","lag3")
+rm(signals_lar_interjacent, p_up, p_down)
+```
+
+Представим полученные результаты накопленных доходностей совместных стратегий с разными комбинациями барьерных вероятностей в виде heat_map и сгруппируем графический результат по кластерам. (запускать, придется подождать минут 10)
+
+```{r}
+signals_lar <- cbind(signals_lar, returns = c(rep(0, nrow(signals_lar))))
+for (i in 1:nrow(signals_lar)){
+  if (signals_lar$position[i] == 1){
+    signals_lar$returns[i] = signals_lar$lag0[i]
+  } else{
+    if (signals_lar$position[i] == -1){
+      signals_lar$returns[i] = -signals_lar$lag0[i]
+    }
+  }
+}
+results_signal_lar_0.1_0.1 <- signals_lar %>%
+  filter(p_up == 0.1 & p_down == 0.1) %>%
+  select(p_up, p_down, returns)
+a11 <- sum(results_signal_lar_0.1_0.1$returns)
+results_signal_lar_0.1_0.2 <- signals_lar %>%
+  filter(p_up == 0.1 & p_down == 0.2) %>%
+  select(p_up, p_down, returns)
+a12 <- sum(results_signal_lar_0.1_0.2$returns)
+results_signal_lar_0.1_0.3<- signals_lar %>%
+  filter(p_up == 0.1 & p_down > 0.2 & p_down < 0.4) %>%
+  select(p_up, p_down, returns)
+a13 <- sum(results_signal_lar_0.1_0.3$returns)
+results_signal_lar_0.1_0.4<- signals_lar %>%
+  filter(p_up == 0.1 & p_down == 0.4) %>%
+  select(p_up, p_down, returns)
+a14 <- sum(results_signal_lar_0.1_0.4$returns)
+results_signal_lar_0.1_0.5<- signals_lar %>%
+  filter(p_up == 0.1 & p_down == 0.5) %>%
+  select(p_up, p_down, returns)
+a15 <- sum(results_signal_lar_0.1_0.5$returns)
+results_signal_lar_0.1_0.6<- signals_lar %>%
+  filter(p_up == 0.1 & p_down == 0.6) %>%
+  select(p_up, p_down, returns)
+a16 <- sum(results_signal_lar_0.1_0.6$returns)
+results_signal_lar_0.1_0.7<- signals_lar %>%
+  filter(p_up == 0.1 & p_down > 0.6 & p_down < 0.8) %>%
+  select(p_up, p_down, returns)
+a17 <- sum(results_signal_lar_0.1_0.7$returns)
+results_signal_lar_0.1_0.8<- signals_lar %>%
+  filter(p_up == 0.1 & p_down == 0.8) %>%
+  select(p_up, p_down, returns)
+a18 <- sum(results_signal_lar_0.1_0.8$returns)
+results_signal_lar_0.1_0.9<- signals_lar %>%
+  filter(p_up == 0.1 & p_down == 0.9) %>%
+  select(p_up, p_down, returns)
+a19 <- sum(results_signal_lar_0.1_0.9$returns)
+results_signal_lar_0.2_0.1<- signals_lar %>%
+  filter(p_up == 0.2 & p_down == 0.1) %>%
+  select(p_up, p_down, returns)
+a21 <- sum(results_signal_lar_0.2_0.1$returns)
+results_signal_lar_0.2_0.2<- signals_lar %>%
+  filter(p_up == 0.2 & p_down == 0.2) %>%
+  select(p_up, p_down, returns)
+a22 <- sum(results_signal_lar_0.2_0.2$returns)
+results_signal_lar_0.2_0.3<- signals_lar %>%
+  filter(p_up == 0.2 & p_down > 0.2 & p_down < 0.4) %>%
+  select(p_up, p_down, returns)
+a23 <- sum(results_signal_lar_0.2_0.3$returns)
+results_signal_lar_0.2_0.4<- signals_lar %>%
+  filter(p_up == 0.2 & p_down == 0.4) %>%
+  select(p_up, p_down, returns)
+a24 <- sum(results_signal_lar_0.2_0.4$returns)
+results_signal_lar_0.2_0.5<- signals_lar %>%
+  filter(p_up == 0.2 & p_down == 0.5) %>%
+  select(p_up, p_down, returns)
+a25 <- sum(results_signal_lar_0.2_0.5$returns)
+results_signal_lar_0.2_0.6<- signals_lar %>%
+  filter(p_up == 0.2 & p_down == 0.6) %>%
+  select(p_up, p_down, returns)
+a26 <- sum(results_signal_lar_0.2_0.6$returns)
+results_signal_lar_0.2_0.7<- signals_lar %>%
+  filter(p_up == 0.2 & p_down > 0.6 & p_down < 0.8) %>%
+  select(p_up, p_down, returns)
+a27 <- sum(results_signal_lar_0.2_0.7$returns)
+results_signal_lar_0.2_0.8<- signals_lar %>%
+  filter(p_up == 0.2 & p_down == 0.8) %>%
+  select(p_up, p_down, returns)
+a28 <- sum(results_signal_lar_0.2_0.8$returns)
+results_signal_lar_0.2_0.9<- signals_lar %>%
+  filter(p_up == 0.2 & p_down == 0.9) %>%
+  select(p_up, p_down, returns)
+a29 <- sum(results_signal_lar_0.2_0.9$returns)
+results_signal_lar_0.3_0.1<- signals_lar %>%
+  filter(p_up > 0.2 & p_up < 0.4 & p_down == 0.1) %>%
+  select(p_up, p_down, returns)
+a31 <- sum(results_signal_lar_0.3_0.1$returns)
+results_signal_lar_0.3_0.2<- signals_lar %>%
+  filter(p_up > 0.2 & p_up < 0.4 & p_down == 0.2) %>%
+  select(p_up, p_down, returns)
+a32 <- sum(results_signal_lar_0.3_0.2$returns)
+results_signal_lar_0.3_0.3<- signals_lar %>%
+  filter(p_up > 0.2 & p_up < 0.4 & p_down > 0.2 & p_down < 0.4) %>%
+  select(p_up, p_down, returns)
+a33 <- sum(results_signal_lar_0.3_0.3$returns)
+results_signal_lar_0.3_0.4<- signals_lar %>%
+  filter(p_up > 0.2 & p_up < 0.4 & p_down == 0.4) %>%
+  select(p_up, p_down, returns)
+a34 <- sum(results_signal_lar_0.3_0.4$returns)
+results_signal_lar_0.3_0.5<- signals_lar %>%
+  filter(p_up > 0.2 & p_up < 0.4 & p_down == 0.5) %>%
+  select(p_up, p_down, returns)
+a35 <- sum(results_signal_lar_0.3_0.5$returns)
+results_signal_lar_0.3_0.6<- signals_lar %>%
+  filter(p_up > 0.2 & p_up < 0.4 & p_down == 0.6) %>%
+  select(p_up, p_down, returns)
+a36 <- sum(results_signal_lar_0.3_0.6$returns)
+results_signal_lar_0.3_0.7<- signals_lar %>%
+  filter(p_up > 0.2 & p_up < 0.4 & p_down > 0.6 & p_down < 0.8) %>%
+  select(p_up, p_down, returns)
+a37 <- sum(results_signal_lar_0.3_0.7$returns)
+results_signal_lar_0.3_0.8<- signals_lar %>%
+  filter(p_up > 0.2 & p_up < 0.4 & p_down == 0.8) %>%
+  select(p_up, p_down, returns)
+a38 <- sum(results_signal_lar_0.3_0.8$returns)
+results_signal_lar_0.3_0.9<- signals_lar %>%
+  filter(p_up > 0.2 & p_up < 0.4 & p_down == 0.9) %>%
+  select(p_up, p_down, returns)
+a39 <- sum(results_signal_lar_0.3_0.9$returns)
+results_signal_lar_0.4_0.1<- signals_lar %>%
+  filter(p_up == 0.4 & p_down == 0.1) %>%
+  select(p_up, p_down, returns)
+a41 <- sum(results_signal_lar_0.4_0.1$returns)
+results_signal_lar_0.4_0.2<- signals_lar %>%
+  filter(p_up == 0.4 & p_down == 0.2) %>%
+  select(p_up, p_down, returns)
+a42 <- sum(results_signal_lar_0.4_0.2$returns)
+results_signal_lar_0.4_0.3<- signals_lar %>%
+  filter(p_up == 0.4 & p_down > 0.2 & p_down < 0.4) %>%
+  select(p_up, p_down, returns)
+a43 <- sum(results_signal_lar_0.4_0.3$returns)
+results_signal_lar_0.4_0.4<- signals_lar %>%
+  filter(p_up == 0.4 & p_down == 0.4) %>%
+  select(p_up, p_down, returns)
+a44 <- sum(results_signal_lar_0.4_0.4$returns)
+results_signal_lar_0.4_0.5<- signals_lar %>%
+  filter(p_up == 0.4 & p_down == 0.5) %>%
+  select(p_up, p_down, returns)
+a45 <- sum(results_signal_lar_0.4_0.5$returns)
+results_signal_lar_0.4_0.6<- signals_lar %>%
+  filter(p_up == 0.4 & p_down == 0.6) %>%
+  select(p_up, p_down, returns)
+a46 <- sum(results_signal_lar_0.4_0.6$returns)
+results_signal_lar_0.4_0.7<- signals_lar %>%
+  filter(p_up == 0.4 & p_down > 0.6 & p_down < 0.8) %>%
+  select(p_up, p_down, returns)
+a47 <- sum(results_signal_lar_0.4_0.7$returns)
+results_signal_lar_0.4_0.8<- signals_lar %>%
+  filter(p_up == 0.4 & p_down == 0.8) %>%
+  select(p_up, p_down, returns)
+a48 <- sum(results_signal_lar_0.4_0.8$returns)
+results_signal_lar_0.4_0.9<- signals_lar %>%
+  filter(p_up == 0.4 & p_down == 0.9) %>%
+  select(p_up, p_down, returns)
+a49 <- sum(results_signal_lar_0.4_0.9$returns)
+results_signal_lar_0.5_0.1<- signals_lar %>%
+  filter(p_up == 0.5 & p_down == 0.1) %>%
+  select(p_up, p_down, returns)
+a51 <- sum(results_signal_lar_0.5_0.1$returns)
+results_signal_lar_0.5_0.2<- signals_lar %>%
+  filter(p_up == 0.5 & p_down == 0.2) %>%
+  select(p_up, p_down, returns)
+a52 <- sum(results_signal_lar_0.5_0.2$returns)
+results_signal_lar_0.5_0.3<- signals_lar %>%
+  filter(p_up == 0.5 & p_down > 0.2 & p_down < 0.4) %>%
+  select(p_up, p_down, returns)
+a53 <- sum(results_signal_lar_0.5_0.3$returns)
+results_signal_lar_0.5_0.4<- signals_lar %>%
+  filter(p_up == 0.5 & p_down == 0.4) %>%
+  select(p_up, p_down, returns)
+a54 <- sum(results_signal_lar_0.5_0.4$returns)
+results_signal_lar_0.5_0.5<- signals_lar %>%
+  filter(p_up == 0.5 & p_down == 0.5) %>%
+  select(p_up, p_down, returns)
+a55 <- sum(results_signal_lar_0.5_0.5$returns)
+results_signal_lar_0.5_0.6<- signals_lar %>%
+  filter(p_up == 0.5 & p_down == 0.6) %>%
+  select(p_up, p_down, returns)
+a56 <- sum(results_signal_lar_0.5_0.6$returns)
+results_signal_lar_0.5_0.7<- signals_lar %>%
+  filter(p_up == 0.5 & p_down > 0.6 & p_down < 0.8) %>%
+  select(p_up, p_down, returns)
+a57 <- sum(results_signal_lar_0.5_0.7$returns)
+results_signal_lar_0.5_0.8<- signals_lar %>%
+  filter(p_up == 0.5 & p_down == 0.8) %>%
+  select(p_up, p_down, returns)
+a58 <- sum(results_signal_lar_0.5_0.8$returns)
+results_signal_lar_0.5_0.9<- signals_lar %>%
+  filter(p_up == 0.5 & p_down == 0.9) %>%
+  select(p_up, p_down, returns)
+a59 <- sum(results_signal_lar_0.5_0.9$returns)
+results_signal_lar_0.6_0.1<- signals_lar %>%
+  filter(p_up == 0.6 & p_down == 0.1) %>%
+  select(p_up, p_down, returns)
+a61 <- sum(results_signal_lar_0.6_0.1$returns)
+results_signal_lar_0.6_0.2<- signals_lar %>%
+  filter(p_up == 0.6 & p_down == 0.2) %>%
+  select(p_up, p_down, returns)
+a62 <- sum(results_signal_lar_0.6_0.2$returns)
+results_signal_lar_0.6_0.3<- signals_lar %>%
+  filter(p_up == 0.6 & p_down > 0.2 & p_down < 0.4) %>%
+  select(p_up, p_down, returns)
+a63 <- sum(results_signal_lar_0.6_0.3$returns)
+results_signal_lar_0.6_0.4<- signals_lar %>%
+  filter(p_up == 0.6 & p_down == 0.4) %>%
+  select(p_up, p_down, returns)
+a64 <- sum(results_signal_lar_0.6_0.4$returns)
+results_signal_lar_0.6_0.5<- signals_lar %>%
+  filter(p_up == 0.6 & p_down == 0.5) %>%
+  select(p_up, p_down, returns)
+a65 <- sum(results_signal_lar_0.6_0.5$returns)
+results_signal_lar_0.6_0.6<- signals_lar %>%
+  filter(p_up == 0.6 & p_down == 0.6) %>%
+  select(p_up, p_down, returns)
+a66 <- sum(results_signal_lar_0.6_0.6$returns)
+results_signal_lar_0.6_0.7<- signals_lar %>%
+  filter(p_up == 0.6 & p_down > 0.6 & p_down < 0.8) %>%
+  select(p_up, p_down, returns)
+a67 <- sum(results_signal_lar_0.6_0.7$returns)
+results_signal_lar_0.6_0.8<- signals_lar %>%
+  filter(p_up == 0.6 & p_down == 0.8) %>%
+  select(p_up, p_down, returns)
+a68 <- sum(results_signal_lar_0.6_0.8$returns)
+results_signal_lar_0.6_0.9<- signals_lar %>%
+  filter(p_up == 0.6 & p_down == 0.9) %>%
+  select(p_up, p_down, returns)
+a69 <- sum(results_signal_lar_0.6_0.9$returns)
+results_signal_lar_0.7_0.1<- signals_lar %>%
+  filter(p_up > 0.6 & p_up < 0.8 & p_down == 0.1) %>%
+  select(p_up, p_down, returns)
+a71 <- sum(results_signal_lar_0.7_0.1$returns)
+results_signal_lar_0.7_0.2<- signals_lar %>%
+  filter(p_up > 0.6 & p_up < 0.8 & p_down == 0.2) %>%
+  select(p_up, p_down, returns)
+a72 <- sum(results_signal_lar_0.7_0.2$returns)
+results_signal_lar_0.7_0.3<- signals_lar %>%
+  filter(p_up > 0.6 & p_up < 0.8 & p_down > 0.2 & p_down < 0.4) %>%
+  select(p_up, p_down, returns)
+a73 <- sum(results_signal_lar_0.7_0.3$returns)
+results_signal_lar_0.7_0.4<- signals_lar %>%
+  filter(p_up > 0.6 & p_up < 0.8 & p_down == 0.4) %>%
+  select(p_up, p_down, returns)
+a74 <- sum(results_signal_lar_0.7_0.4$returns)
+results_signal_lar_0.7_0.5<- signals_lar %>%
+  filter(p_up > 0.6 & p_up < 0.8 & p_down == 0.5) %>%
+  select(p_up, p_down, returns)
+a75 <- sum(results_signal_lar_0.7_0.5$returns)
+results_signal_lar_0.7_0.6<- signals_lar %>%
+  filter(p_up > 0.6 & p_up < 0.8 & p_down == 0.6) %>%
+  select(p_up, p_down, returns)
+a76 <- sum(results_signal_lar_0.7_0.6$returns)
+results_signal_lar_0.7_0.7<- signals_lar %>%
+  filter(p_up > 0.6 & p_up < 0.8 & p_down > 0.6 & p_down < 0.8) %>%
+  select(p_up, p_down, returns)
+a77 <- sum(results_signal_lar_0.7_0.7$returns)
+results_signal_lar_0.7_0.8<- signals_lar %>%
+  filter(p_up > 0.6 & p_up < 0.8 & p_down == 0.8) %>%
+  select(p_up, p_down, returns)
+a78 <- sum(results_signal_lar_0.7_0.8$returns)
+results_signal_lar_0.7_0.9<- signals_lar %>%
+  filter(p_up > 0.6 & p_up < 0.8 & p_down == 0.9) %>%
+  select(p_up, p_down, returns)
+a79 <- sum(results_signal_lar_0.7_0.9$returns)
+results_signal_lar_0.8_0.1<- signals_lar %>%
+  filter(p_up == 0.8 & p_down == 0.1) %>%
+  select(p_up, p_down, returns)
+a81 <- sum(results_signal_lar_0.8_0.1$returns)
+results_signal_lar_0.8_0.2<- signals_lar %>%
+  filter(p_up == 0.8 & p_down == 0.2) %>%
+  select(p_up, p_down, returns)
+a82 <- sum(results_signal_lar_0.8_0.2$returns)
+results_signal_lar_0.8_0.3<- signals_lar %>%
+  filter(p_up == 0.8 & p_down > 0.2 & p_down < 0.4) %>%
+  select(p_up, p_down, returns)
+a83 <- sum(results_signal_lar_0.8_0.3$returns)
+results_signal_lar_0.8_0.4<- signals_lar %>%
+  filter(p_up == 0.8 & p_down == 0.4) %>%
+  select(p_up, p_down, returns)
+a84 <- sum(results_signal_lar_0.8_0.4$returns)
+results_signal_lar_0.8_0.5<- signals_lar %>%
+  filter(p_up == 0.8 & p_down == 0.5) %>%
+  select(p_up, p_down, returns)
+a85 <- sum(results_signal_lar_0.8_0.5$returns)
+results_signal_lar_0.8_0.6<- signals_lar %>%
+  filter(p_up == 0.8 & p_down == 0.6) %>%
+  select(p_up, p_down, returns)
+a86 <- sum(results_signal_lar_0.8_0.6$returns)
+results_signal_lar_0.8_0.7<- signals_lar %>%
+  filter(p_up == 0.8 & p_down > 0.6 & p_down < 0.8) %>%
+  select(p_up, p_down, returns)
+a87 <- sum(results_signal_lar_0.8_0.7$returns)
+results_signal_lar_0.8_0.8<- signals_lar %>%
+  filter(p_up == 0.8 & p_down == 0.8) %>%
+  select(p_up, p_down, returns)
+a88 <- sum(results_signal_lar_0.8_0.8$returns)
+results_signal_lar_0.8_0.9<- signals_lar %>%
+  filter(p_up == 0.8 & p_down == 0.9) %>%
+  select(p_up, p_down, returns)
+a89 <- sum(results_signal_lar_0.8_0.9$returns)
+results_signal_lar_0.9_0.1<- signals_lar %>%
+  filter(p_up == 0.9 & p_down == 0.1) %>%
+  select(p_up, p_down, returns)
+a91 <- sum(results_signal_lar_0.9_0.1$returns)
+results_signal_lar_0.9_0.2<- signals_lar %>%
+  filter(p_up == 0.9 & p_down == 0.2) %>%
+  select(p_up, p_down, returns)
+a92 <- sum(results_signal_lar_0.9_0.2$returns)
+results_signal_lar_0.9_0.3<- signals_lar %>%
+  filter(p_up == 0.9 & p_down > 0.2 & p_down < 0.4) %>%
+  select(p_up, p_down, returns)
+a93 <- sum(results_signal_lar_0.9_0.3$returns)
+results_signal_lar_0.9_0.4<- signals_lar %>%
+  filter(p_up == 0.9 & p_down == 0.4) %>%
+  select(p_up, p_down, returns)
+a94 <- sum(results_signal_lar_0.9_0.4$returns)
+results_signal_lar_0.9_0.5<- signals_lar %>%
+  filter(p_up == 0.9 & p_down == 0.5) %>%
+  select(p_up, p_down, returns)
+a95 <- sum(results_signal_lar_0.9_0.5$returns)
+results_signal_lar_0.9_0.6<- signals_lar %>%
+  filter(p_up == 0.9 & p_down == 0.6) %>%
+  select(p_up, p_down, returns)
+a96 <- sum(results_signal_lar_0.9_0.6$returns)
+results_signal_lar_0.9_0.7<- signals_lar %>%
+  filter(p_up == 0.9 & p_down > 0.6 & p_down < 0.8) %>%
+  select(p_up, p_down, returns)
+a97 <- sum(results_signal_lar_0.9_0.7$returns)
+results_signal_lar_0.9_0.8<- signals_lar %>%
+  filter(p_up == 0.9 & p_down == 0.8) %>%
+  select(p_up, p_down, returns)
+a98 <- sum(results_signal_lar_0.9_0.8$returns)
+results_signal_lar_0.9_0.9<- signals_lar %>%
+  filter(p_up == 0.9 & p_down == 0.9) %>%
+  select(p_up, p_down, returns)
+a99 <- sum(results_signal_lar_0.9_0.9$returns)
+
+return_acc_lar <- matrix(c(a11, a12, a13, a14, a15, a16, a17, a18, a19, a21, a22, a23, a24, a25, a26, a27, a28, a29, a31, a32, a33, a34, a35, a36, a37, a38, a39, a41, a42, a43, a44, a45, a46, a47, a48, a49, a51, a52, a53, a54, a55, a56, a57, a58, a59, a61, a62, a63, a64, a65, a66, a67, a68, a69, a71, a72, a73, a74, a75, a76, a77, a78, a79, a81, a82, a83, a84, a85, a86, a87, a88, a89, a91, a92, a93, a94, a95, a96, a97, a98, a99), nrow = 9, ncol = 9)
+
+rm(a11, a12, a13, a14, a15, a16, a17, a18, a19, a21, a22, a23, a24, a25, a26, a27, a28, a29, a31, a32, a33, a34, a35, a36, a37, a38, a39, a41, a42, a43, a44, a45, a46, a47, a48, a49, a51, a52, a53, a54, a55, a56, a57, a58, a59, a61, a62, a63, a64, a65, a66, a67, a68, a69, a71, a72, a73, a74, a75, a76, a77, a78, a79, a81, a82, a83, a84, a85, a86, a87, a88, a89, a91, a92, a93, a94, a95, a96, a97, a98, a99)
+
+rownames(return_acc_lar) <- c("0.1","0.2","0.3","0.4","0.5","0.6","0.7","0.8","0.9")
+colnames(return_acc_lar) <- c("0.1","0.2","0.3","0.4","0.5","0.6","0.7","0.8","0.9")
+heatmap(return_acc_lar, xlab = "p_up prob", ylab = "p_down prob", main = "Значение накопленных доходностей для смешанной стратегии с разными барьерными вероятностями")  
+```
+
+наибольшую накопленную доходность продемонстрировала стратегия p_up = 0.9 p_down = 0.1 (15.86%). Если сравнивать с результатами маржинальных стратегий, то наилучшую накопленную доходность показала работа классификатора роста с заданной барьерной вероятностью роста p_up = 0.2 (37%).
+
+Все дальнейшие задания по совместной стратегии - повторяются теми же фрагментами кодов для маржинальных стратегий 1 в 1. Выборка слишком большая, если анализировать 81 комбинацию вероятностей, поэтому я решил остановиться на этом (>нагрузка на цп, >>времени, = +/- те же выводы). Считаю, что эти задачи были достигнуты в рамках анализа маржинальных стратегий :) 
+
+
+
+
+
+
+
+
+

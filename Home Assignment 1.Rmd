@@ -1,0 +1,222 @@
+
+Вариант 11
+
+Предустановка пакетов
+
+```{r}
+install.packages("dplyr")
+install.packages("ggplot2")
+install.packages("xts")
+install.packages("nortest")
+install.packages("e1071")
+install.packages("pracma")
+install.packages("aTSA")
+library(dplyr)
+library(ggplot2)
+library(xts)
+library(nortest)
+library(e1071)
+library(pracma)
+library(aTSA)
+```
+
+Чтение файла, преобразование даты&времени к соответствующему типу. Для анализа оставим только цены закрытия и доходности. Для корректного считывания файла поменять рабочую директорию на СВОЮ! (file="...")
+
+```{r}
+d1 <- read.csv(file = "D:/eurusd_h1.csv", header = TRUE, stringsAsFactors = FALSE)
+d1$datetime <- paste(d1$date, d1$time)
+yield <- log(tail(d1$close, -1)/head(d1$close, -1))
+yield <- as.data.frame(yield)
+a <- 0
+a <- as.data.frame(a)
+colnames(a) <- c("yield")
+yield <- rbind(a, yield)
+d1 <- cbind(d1, yield)
+rm(a, yield)
+d1$datetime <- strptime(d1$datetime, format = "%Y.%m.%d %H:%M")
+ts <- xts(d1[c(6, 8)], order.by = d1$datetime)
+ts <- ts["2010-04-08/2011-04-07"]
+ts$yield[1] = 0 #Подразумевается, что в первом периоде мы ничего не знаем о доходности
+```
+
+График изменения цены актива (close) и его характеристика
+
+```{r}
+plot(x=index(ts), y=ts$close, type="l", las = 2, ylab = "Close price", xlab = "date", main = "Evolution of close price for observed asset 2010-04-08/2011-04-07")
+```
+
+На данном временном интервале актив показывает высокую волатильность. В целом наблюдается восходящий тренд.
+
+
+Анализ доходности, статистические характеристики (возможна долгая загрузка из-за графика квантилей)
+
+```{r}
+plot(x=index(ts), y=ts$yield, type="l", las = 2, ylab = "yield", xlab = "date", main = "Evolution of yield for observed asset 2010-04-08/2011-04-07")
+summary(ts$yield)
+var(ts$yield)
+sd(ts$yield)
+skewness(ts$yield)
+kurtosis(ts$yield)
+qqnorm(ts$yield)
+```
+
+График квантилей доходности немного напоминает выборку, полученную из нормального распределения. Судя по графику доходности можно заметить, что его среднее 0, а дисперсия примерно постоянна, поэтому можно судить о его возможной слабой стационарности.
+
+Протестируем распределение доходностей на соответствие нормальному (тест Колмогорова-Смирнова, Нулевая гипотеза - значения выборки распределены нормально)
+
+```{r}
+lillie.test(ts$yield)
+```
+
+Гипотеза о соответствии распределения нормальному отклоняется.
+
+Протестируем ряд доходностей на стационарность (Тест Дики-Фуллера, нулевая гипотеза - ряд нестационарен, есть единичный корень)
+
+```{r}
+adf.test(ts$yield)
+acf(ts$yield)
+pacf(ts$yield)
+```
+
+Гипотеза о том, что ряд доходностей нестационарен, отклоняется на всех разумных уровнях значимости. Предположения, сделанные ранее на основе графика доходности подтвердились.Также это подтверждает характерный вид графиков корреляционной и частичной корреляционной функции.
+
+
+Стратегия Momentum:
+Пусть размер обучающей выборки для расчета скользящей средней - 20 наблюдений (SMA(20)). Создадим также вектор результатов торговой стратегии - profit, длина которого на 20 наблюдений меньше, чем размер ряда доходностей. signal - вектор сигналов: 1 - занимаем длинную позицию, -1 - занимаем короткую позицию, 0 - ничего не делаем. Проверяем условие: если мы заняли длинную позицию, то неважно как ведет себя актив, мы получаем ту же доходность (в случае роста цены выигрываем в случае падения проигрываем), поэтому переносим соответствующее значение доходности из ряда (там он уже с соответствующим знаком) в вектор profit . В случае с занятием короткой позиции мы выигрываем, когда доходность < 0 и проигрываем, когда доходность > 0, поэтому переносим соответствующее значение доходности из ряда в вектор profit с противоположным знаком. Если в определенный момент времени мы не принимаем решение по активу, то переносим значение доходности равное 0.
+
+```{r}
+signal_m <- 1:(nrow(ts)-20)
+signal_m[1:20] <- 0
+profit_m <- 1:(nrow(ts)-20)
+profit_m[1:20] <- 0
+for (i in 2:(nrow(ts)-20)){
+    if (mean(ts$yield[i:(i+19)])>0){
+      signal_m[i] = 1
+    } else {
+      if (mean(ts$yield[i:(i+19)])<0){
+        signal_m[i] = -1
+      } else {
+        signal_m[i] = 0
+      }
+    }
+}
+for (j in 2:(nrow(ts)-20)){
+  if (signal_m[j] == 1){
+    profit_m[j] = ts$yield[j+20]
+  } else {
+    if (signal_m[j] == -1){
+      profit_m[j] = -ts$yield[j+20]
+    } else {
+      if (signal_m[j] == 0){
+        profit_m[j] = 0
+      }
+    }
+  }
+}
+```
+
+
+Стратегия mean reversion:
+Пусть размер обучающей выборки для расчета скользящей средней - 20 наблюдений (SMA(20)). Концепция стратегии альтернативна предыдущей - занимаем коротку позицию (signal = -1), если скользящая средняя доходностей > 0, длинную (signal = 1), если < 0 и ничего не делаем (signal = 0), если = 0. Перенос значений доходности из временного ряда в вектор profit осуществляется по тому же принципу, как в предыдущей стратегии.
+
+```{r}
+signal_mr <- 1:(nrow(ts)-20)
+signal_mr[1:20] <- 0
+profit_mr <- 1:(nrow(ts)-20)
+profit_mr[1:20] <- 0
+for (i in 2:(nrow(ts)-20)){
+    if (mean(ts$yield[i:(i+19)])>0){
+      signal_mr[i] = -1
+    } else {
+      if (mean(ts$yield[i:(i+19)])<0){
+        signal_mr[i] = 1
+      } else {
+        signal_mr[i] = 0
+      }
+    }
+}
+for (j in 2:(nrow(ts)-20)){
+  if (signal_mr[j] == 1){
+    profit_mr[j] = ts$yield[j+20]
+  } else {
+    if (signal_mr[j] == -1){
+      profit_mr[j] = -ts$yield[j+20]
+    } else {
+      if (signal_mr[j] == 0){
+        profit_mr[j] = 0
+      }
+    }
+  }
+}
+```
+
+Стратегия hurst rule:
+В расчете экспоненты Херста по временному ряду доходностей будем использовать 20 наблюдений. Если её значение > 0.5, то следуем стратегии моментума (переносим значение сигналов для соответствующего периода). Если < 0.5, то следуем стратегии mean reversion (переносим значение сигналов для соответствующего периода). Если = 0.5, то ничего не делаем. Перенос значений доходности из временного ряда в вектор profit осуществляется по тому же принципу, как в предыдущих стратегиях. P.S. итерация второго цикла занимает некоторое время
+
+```{r}
+signal_hexp <- 1:(nrow(ts)-20)
+signal_hexp[1:20] <- 0
+profit_hexp <- 1:(nrow(ts)-20)
+profit_hexp[1:20] <- 0
+for (i in 2:(nrow(ts)-20)){
+    if (hurstexp(ts$yield[i:(i+19)], display = FALSE)$Hs>0.5){
+      signal_hexp[i] = signal_m[i]
+    } else {
+      if (hurstexp(ts$yield[i:(i+19)], display = FALSE)$Hs<0.5){
+        signal_hexp[i] = signal_mr[i]
+      } else {
+        signal_hexp[i] = 0
+      }
+    }
+}
+for (j in 2:(nrow(ts)-20)){
+  if (signal_hexp[j] == 1){
+    profit_hexp[j] = ts$yield[j+20]
+  } else {
+    if (signal_hexp[j] == -1){
+      profit_hexp[j] = -ts$yield[j+20]
+    } else {
+      if (signal_hexp[j] == 0){
+        profit_hexp[j] = 0
+      }
+    }
+  }
+}
+```
+
+
+Сравнение результатов трех стратегий между собой и со стратегией "купи и держи". Для сравнения с другими стратегиями (в 21 периоде по первым трем стратегиям мы входим в позицию впервые, в то время как для стратегии "купи и держи" мы вошли в позицию в 1 периоде и имеем накопленную доходность в каждом периоде до 21ого, поэтому для сравнения возьмем единый таймфрейм, где по каждым стратегиям имеются данные по накопленной доходности). Расчитаем накопленные доходности по всем стратегиям и соберем единый датафрейм.
+
+```{r}
+profit_buynhold_acc <- c()
+profit_m_acc <- c()
+profit_mr_acc <- c()
+profit_hexp_acc <- c()
+for (i in 22:nrow(ts)-20){
+  profit_buynhold_acc[22] <- 0 #для единого таймфрейма
+  profit_buynhold_acc[i] <- sum(ts$yield[22:i])
+}
+profit_buynhold_acc[1] <- 0
+for (i in 1:length(profit_m)){
+  profit_m_acc[i] <- sum(profit_m[1:i])
+}
+for (i in 1:length(profit_mr)){
+  profit_mr_acc[i] <- sum(profit_mr[1:i])
+}
+for (i in 1:length(profit_hexp)){
+  profit_hexp_acc[i] <- sum(profit_hexp[1:i])
+}
+comparison <- data.frame(profit_buynhold_acc, profit_m_acc, profit_mr_acc, profit_hexp_acc)
+x <- as.POSIXct(d1$datetime[68334:74552])
+y1 <- comparison$profit_buynhold_acc
+y2 <- comparison$profit_m_acc
+y3 <- comparison$profit_mr_acc
+y4 <- comparison$profit_hexp_acc
+df <- data.frame(x, y1, y2, y3, y4)
+ggplot(df, aes(x)) + geom_line(aes(y=y1), colour="gold") + geom_line(aes(y=y2), colour="red") + geom_line(aes(y=y3), colour="blue") + geom_line(aes(y=y4), colour="green") + ggtitle("Сравнение накопленной доходности по разным стратегиям") + ylab("Накопленная доходность") + xlab("Дата") + theme(legend.position = "right")
+```
+
+Вывод: наилучший перфоманс на основе критерия накопленной доходности на данном временном интервале продемонстрировала стратегия, основанная на экспоненте Хёрста (зелёный цвет) - . Немного хуже результаты у стратегий на основе моментума (красный цвет) и стратегии "купи и держи" (золотой цвет). Отрицательную накопленную доходность продемонстрировала стратегия mean reversion.
+
+
+
